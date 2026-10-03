@@ -72,7 +72,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	buildCmd := exec.Command("go", "build", "-cover", "-coverpkg=github.com/remorses/tuistory/...", "-o", binaryPath, ".")
+	buildCmd := exec.Command("go", "build", "-cover", "-covermode=atomic", "-coverpkg=github.com/remorses/tuistory/...", "-o", binaryPath, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to build test binary: %v\noutput: %s\n", err, string(out))
 		os.Exit(1)

@@ -39,7 +39,11 @@ fmt:
 # Run static analysis and test suite in sequence
 check:
     go vet ./...
-    go test -v ./...
+    bash scripts/coverage.sh
+
+# Measure unit and compiled CLI execution together and enforce 90% coverage
+coverage:
+    bash scripts/coverage.sh
 
 # Clean up build binaries and temporary files
 clean:

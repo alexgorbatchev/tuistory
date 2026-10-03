@@ -30,6 +30,4 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: |
-          mkdir -p .tmp/test-tmp
-          TMPDIR="$PWD/.tmp/test-tmp" go test -race -v ./...
+        run: bash scripts/coverage.sh
