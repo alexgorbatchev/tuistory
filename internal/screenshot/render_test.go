@@ -219,6 +219,35 @@ func TestScreenshotNativeRasterPreflight(t *testing.T) {
 	}
 }
 
+func TestScreenshotPreflightRejectsFixedCoordinateOverflow(t *testing.T) {
+	term := xterm.New(xterm.WithCols(1), xterm.WithRows(1))
+	term.WriteString("_")
+	faces, err := loadFaces(14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer faces.close()
+	for _, tt := range []struct {
+		name    string
+		height  int
+		wantErr bool
+	}{
+		{"baseline", 67108860, true},
+		{"translated glyph bounds", 67108852, true},
+		{"nearby representable coordinates", 67108840, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			grid, err := newLayout(1, 1, Options{Width: 1, FontSize: 14, LineHeight: float64(tt.height) / 14})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateRasterBounds(term, 1, grid, faces); (err != nil) != tt.wantErr {
+				t.Fatalf("coordinate preflight error=%v, want error=%v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestScreenshotNativeRasterLimitsAtRenderBoundary(t *testing.T) {
 	for _, tt := range []struct {
 		text string

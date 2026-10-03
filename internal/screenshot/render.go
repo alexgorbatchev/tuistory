@@ -190,12 +190,12 @@ func renderCells(img *image.RGBA, term *xterm.Terminal, rows int, grid layout, f
 			cellFg = color.RGBA{uint8((uint16(cellFg.R) + uint16(cellBg.R)) / 2), uint8((uint16(cellFg.G) + uint16(cellBg.G)) / 2), uint8((uint16(cellFg.B) + uint16(cellBg.B)) / 2), 255}
 		}
 		draw.Draw(img, rect, image.NewUniform(cellBg), image.Point{}, draw.Src)
-		face, dot := cellFont(faces, cell, cellRect)
+		face, position := cellFont(faces, cell, cellRect)
 		metrics := face.Metrics()
-		baseline := dot.Y.Floor()
+		baseline := position.Y
 		if chars := cell.GetChars(); chars != "" && chars != " " {
 			// Clip italic overhang and wide glyphs to their terminal cell span.
-			d := font.Drawer{Dst: content.SubImage(rect).(*image.RGBA), Src: image.NewUniform(cellFg), Face: face, Dot: dot}
+			d := font.Drawer{Dst: content.SubImage(rect).(*image.RGBA), Src: image.NewUniform(cellFg), Face: face, Dot: fixed.P(position.X, position.Y)}
 			if !drawGeometry(content, cellRect, rect, chars, cellFg) {
 				d.DrawString(chars)
 			}
@@ -246,31 +246,47 @@ func validateRasterBounds(term *xterm.Terminal, rows int, grid layout, faces fon
 			}
 			return nil
 		}
-		face, dot := cellFont(faces, cell, rect)
+		face, position := cellFont(faces, cell, rect)
+		dotX, dotY := int64(position.X)*int64(fixed.I(1)), int64(position.Y)*int64(fixed.I(1))
 		prev := rune(-1)
 		for _, r := range chars {
 			if prev >= 0 {
-				dot.X += face.Kern(prev, r)
+				dotX += int64(face.Kern(prev, r))
+			}
+			if !nativeCoordinate(dotX) || !nativeCoordinate(dotY) {
+				return fmt.Errorf("terminal font coordinates exceed native fixed-point range")
 			}
 			bounds, advance, _ := face.GlyphBounds(r)
-			bounds = bounds.Add(dot)
+			minX, minY := int64(bounds.Min.X)+dotX, int64(bounds.Min.Y)+dotY
+			maxX, maxY := int64(bounds.Max.X)+dotX, int64(bounds.Max.Y)+dotY
+			// OpenType adds the dot in fixed.Int26_6, and Ceil adds 63 before
+			// shifting. Validate both operations in int64 before rasterization.
+			ceilBias := int64(fixed.I(1)) - 1
+			if !nativeCoordinate(minX) || !nativeCoordinate(minY) || !nativeCoordinate(maxX+ceilBias) || !nativeCoordinate(maxY+ceilBias) {
+				return fmt.Errorf("terminal font coordinates exceed native fixed-point range")
+			}
+			bounds = fixed.Rectangle26_6{Min: fixed.Point26_6{X: fixed.Int26_6(minX), Y: fixed.Int26_6(minY)}, Max: fixed.Point26_6{X: fixed.Int26_6(maxX), Y: fixed.Int26_6(maxY)}}
 			width, height := bounds.Max.X.Ceil()-bounds.Min.X.Floor(), bounds.Max.Y.Ceil()-bounds.Min.Y.Floor()
 			if !rasterWithinLimit(width, height) {
 				return fmt.Errorf("terminal glyph raster exceeds rendering limits")
 			}
-			dot.X += advance
+			dotX += int64(advance)
 			prev = r
 		}
 		return nil
 	})
 }
 
-func cellFont(faces fontFaces, cell *xterm.CellData, rect image.Rectangle) (font.Face, fixed.Point26_6) {
+func nativeCoordinate(value int64) bool {
+	return value >= math.MinInt32 && value <= math.MaxInt32
+}
+
+func cellFont(faces fontFaces, cell *xterm.CellData, rect image.Rectangle) (font.Face, image.Point) {
 	r, _ := utf8.DecodeRuneInString(cell.GetChars())
 	face := faces.selectFace(cell.IsBold() != 0, cell.IsItalic() != 0, r)
 	metrics := face.Metrics()
 	baseline := rect.Min.Y + (rect.Dy()-metrics.Ascent.Ceil()-metrics.Descent.Ceil())/2 + metrics.Ascent.Ceil()
-	return face, fixed.P(rect.Min.X, baseline)
+	return face, image.Pt(rect.Min.X, baseline)
 }
 
 func rasterWithinLimit(width, height int) bool {
