@@ -379,6 +379,13 @@ func (s *Session) waitLoop() {
 	}
 }
 
+// IsClosed reports whether session closing has begun, independently of child exit.
+func (s *Session) IsClosed() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.closed
+}
+
 // IsDead returns whether the child process has exited.
 func (s *Session) IsDead() bool {
 	s.mu.RLock()
