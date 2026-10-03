@@ -156,7 +156,10 @@ func (o *scrollOptions) run(c *commandContext, cmd *cobra.Command, args []string
 			count = value
 		}
 	}
-	x, y := o.coordinates(cmd)
+	x, y, err := o.coordinates(cmd)
+	if err != nil {
+		return err
+	}
 	if dir == "up" {
 		err = s.ScrollUp(count, x, y)
 	} else {
@@ -169,15 +172,21 @@ func (o *scrollOptions) run(c *commandContext, cmd *cobra.Command, args []string
 	return nil
 }
 
-func (o *scrollOptions) coordinates(cmd *cobra.Command) (*int, *int) {
+func (o *scrollOptions) coordinates(cmd *cobra.Command) (*int, *int, error) {
 	var x, y *int
 	if cmd.Flags().Changed("x") {
+		if o.x < 0 {
+			return nil, nil, fmt.Errorf("x coordinate must be nonnegative")
+		}
 		x = &o.x
 	}
 	if cmd.Flags().Changed("y") {
+		if o.y < 0 {
+			return nil, nil, fmt.Errorf("y coordinate must be nonnegative")
+		}
 		y = &o.y
 	}
-	return x, y
+	return x, y, nil
 }
 
 func newResizeCommand(c *commandContext) *cobra.Command {

@@ -91,12 +91,15 @@ func TestScrollCoordinatesPreserveExplicitZero(t *testing.T) {
 		name, direction string
 		flags           []string
 		want            string
+		invalid         bool
 	}{
-		{"default center", "up", nil, "\x1b[<64;11;4M"},
-		{"left edge", "up", []string{"--x", "0"}, "\x1b[<64;1;4M"},
-		{"top edge", "down", []string{"--y", "0"}, "\x1b[<65;11;1M"},
-		{"top left", "down", []string{"--x", "0", "--y", "0"}, "\x1b[<65;1;1M"},
-		{"explicit positive", "up", []string{"--x", "3", "--y", "2"}, "\x1b[<64;4;3M"},
+		{"default center", "up", nil, "\x1b[<64;11;4M", false},
+		{"left edge", "up", []string{"--x", "0"}, "\x1b[<64;1;4M", false},
+		{"top edge", "down", []string{"--y", "0"}, "\x1b[<65;11;1M", false},
+		{"top left", "down", []string{"--x", "0", "--y", "0"}, "\x1b[<65;1;1M", false},
+		{"explicit positive", "up", []string{"--x", "3", "--y", "2"}, "\x1b[<64;4;3M", false},
+		{"negative x", "up", []string{"--x", "-1"}, "x coordinate must be nonnegative", true},
+		{"negative y", "down", []string{"--y", "-1"}, "y coordinate must be nonnegative", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := relay.NewSessionRegistry()
@@ -109,6 +112,19 @@ func TestScrollCoordinatesPreserveExplicitZero(t *testing.T) {
 			s.Read() // Consume readiness output before waiting for the echoed event.
 			args := append([]string{"scroll", tt.direction, "-s", "mouse"}, tt.flags...)
 			res = ExecuteCommand(args, reg, ".", nil)
+			if tt.invalid {
+				if res.ExitCode == 0 {
+					s.WaitForUnreadOutput(time.Second)
+					t.Fatalf("invalid coordinates accepted; PTY output=%q", s.GetRawOutput())
+				}
+				if !strings.Contains(res.Stderr, tt.want) {
+					t.Fatalf("coordinate validation: %+v", res)
+				}
+				if s.WaitForUnreadOutput(20 * time.Millisecond) {
+					t.Fatalf("invalid mouse event reached PTY: %q", s.GetRawOutput())
+				}
+				return
+			}
 			if res.ExitCode != 0 || res.Stdout != "OK" {
 				t.Fatalf("scroll: %+v", res)
 			}
