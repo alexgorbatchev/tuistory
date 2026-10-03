@@ -20,6 +20,7 @@ func TestWaitForRelayRequiresCompatibleProtocol(t *testing.T) {
 	}{
 		{"typescript higher version", `{"version":"0.11.0"}`, false},
 		{"foreign protocol", `{"version":"99.0.0","protocol":"foreign/1"}`, false},
+		{"malformed version", `{"version":"garbage","protocol":"tuistory-go/1"}`, false},
 		{"compatible", `{"version":"0.0.1","protocol":"tuistory-go/1"}`, true},
 		{"outdated compatible", `{"version":"0.0.0","protocol":"tuistory-go/1"}`, false},
 	} {

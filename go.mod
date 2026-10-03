@@ -9,6 +9,7 @@ require (
 	github.com/gitpod-io/xterm-go v0.0.0-20260907130418-dae5128cb6b3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/image v0.46.0
+	golang.org/x/mod v0.41.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
 )

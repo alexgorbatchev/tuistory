@@ -79,6 +79,7 @@ In Go, `os.Args` preserves `--` exactly. Options must precede `--`; everything a
 - Maintain `.tmp/migration-fixes-checklist.md` with all findings and validation evidence. Check off items only after their verified fixes land on `main`, recording the landing commit.
 - Coordinate parallel agents in isolated `.workspaces/` worktrees with explicit file ownership. Integrate and verify their commits before landing them on `main`.
 - The current migration repair authorizes the reviewed public CLI behavior corrections and verified associated defects; it does not authorize releases or deployments.
+- The user approved `golang.org/x/mod/semver` (`golang.org/x/mod v0.41.0`) for daemon semantic-version comparison during this repair.
 
 ## Boundaries
 

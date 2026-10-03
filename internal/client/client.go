@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/remorses/tuistory/internal/relay"
+	"golang.org/x/mod/semver"
 	"golang.org/x/sys/unix"
 )
 
@@ -42,31 +43,17 @@ type RelayStatus struct {
 
 func (s RelayStatus) compatible(version string) bool {
 	return s.Kind == StatusHealthy && s.Protocol == relay.Protocol &&
+		semver.IsValid(semverVersion(s.Version)) &&
 		(version == "" || CompareVersions(s.Version, version) >= 0)
+}
+
+func semverVersion(version string) string {
+	return "v" + strings.TrimPrefix(version, "v")
 }
 
 // CompareVersions compares two semver strings: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2.
 func CompareVersions(v1, v2 string) int {
-	parts1 := strings.Split(v1, ".")
-	parts2 := strings.Split(v2, ".")
-	maxLen := max(len(parts1), len(parts2))
-
-	for i := 0; i < maxLen; i++ {
-		var n1, n2 int
-		if i < len(parts1) {
-			n1, _ = strconv.Atoi(parts1[i])
-		}
-		if i < len(parts2) {
-			n2, _ = strconv.Atoi(parts2[i])
-		}
-		if n1 != n2 {
-			if n1 < n2 {
-				return -1
-			}
-			return 1
-		}
-	}
-	return 0
+	return semver.Compare(semverVersion(v1), semverVersion(v2))
 }
 
 var nonAlphaNumRegex = regexp.MustCompile(`[^a-z0-9]+`)
