@@ -92,10 +92,13 @@ type Session struct {
 	startedAt  time.Time
 	exitedAt   *time.Time
 
-	isDead      bool
-	exitInfo    *ExitInfo
-	closed      bool
-	closeReason string
+	isDead       bool
+	exitInfo     *ExitInfo
+	closed       bool
+	closeReason  string
+	readFinished bool
+	readDone     chan struct{}
+	processDone  chan struct{}
 
 	hasReceivedData bool
 	dataWaiters     []chan struct{}
@@ -217,6 +220,8 @@ func New(opts LaunchOptions) (*Session, error) {
 		showCursor:       opts.ShowCursor,
 		startedAt:        time.Now(),
 		outputChanged:    make(chan struct{}),
+		readDone:         make(chan struct{}),
+		processDone:      make(chan struct{}),
 		subscribers:      make(map[int]chan string),
 		termcastDbSuffix: generatedTermcastSuffix,
 	}
@@ -228,6 +233,18 @@ func New(opts LaunchOptions) (*Session, error) {
 }
 
 func (s *Session) readLoop() {
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.readFinished = true
+		close(s.readDone)
+		close(s.outputChanged)
+		s.outputChanged = make(chan struct{})
+		for _, ch := range s.dataWaiters {
+			close(ch)
+		}
+		s.dataWaiters = nil
+	}()
 	buf := make([]byte, 8192)
 	for {
 		n, err := s.ptmx.Read(buf)
@@ -321,11 +338,7 @@ func (s *Session) waitLoop() {
 	}
 	info := ExitInfo{ExitCode: exitCode, Signal: signal}
 	s.exitInfo = &info
-
-	for _, ch := range s.dataWaiters {
-		close(ch)
-	}
-	s.dataWaiters = nil
+	close(s.processDone)
 
 	for _, ch := range s.idleWaiters {
 		close(ch)
@@ -422,7 +435,7 @@ func (s *Session) WaitForData(timeout time.Duration) error {
 		s.mu.Unlock()
 		return nil
 	}
-	if s.isDead || s.closed {
+	if s.closed || (s.isDead && s.readFinished) {
 		info := s.exitInfo
 		s.mu.Unlock()
 		return formatExitError(info, "")
@@ -430,22 +443,39 @@ func (s *Session) WaitForData(timeout time.Duration) error {
 
 	ch := make(chan struct{})
 	s.dataWaiters = append(s.dataWaiters, ch)
+	readDone := s.readDone
+	processDone := s.processDone
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.dataWaiters = slices.DeleteFunc(s.dataWaiters, func(waiter chan struct{}) bool { return waiter == ch })
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
 	select {
 	case <-ch:
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		if !s.hasReceivedData {
-			return formatExitError(s.exitInfo, "")
-		}
-		return nil
-	case <-time.After(timeout):
-		s.mu.Lock()
-		s.dataWaiters = slices.DeleteFunc(s.dataWaiters, func(waiter chan struct{}) bool { return waiter == ch })
-		s.mu.Unlock()
+	case <-readDone:
+	case <-timer.C:
 		return fmt.Errorf("waitForData timed out after %v - no data received from PTY", timeout)
 	}
+	s.mu.RLock()
+	received, closed := s.hasReceivedData, s.closed
+	s.mu.RUnlock()
+	if received {
+		return nil
+	}
+	if !closed {
+		select {
+		case <-processDone:
+		case <-timer.C:
+			return fmt.Errorf("waitForData timed out after %v - no data received from PTY", timeout)
+		}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return formatExitError(s.exitInfo, "")
 }
 
 // WaitIdle blocks until terminal output has paused for idleDelay.
@@ -539,6 +569,7 @@ func (s *Session) Text(opts TextOptions) (string, error) {
 		txt := s.renderTextLocked(opts.Only, opts.TrimEnd, opts.ShowCursor)
 		waitText := s.renderTextLocked(opts.Only, opts.TrimEnd, boolPtr(false))
 		isDead := s.isDead
+		readFinished := s.readFinished
 		exitInfo := s.exitInfo
 		s.mu.RUnlock()
 
@@ -551,7 +582,7 @@ func (s *Session) Text(opts TextOptions) (string, error) {
 			return finalTxt, nil
 		}
 
-		if isDead {
+		if isDead && readFinished {
 			return "", formatExitError(exitInfo, txt)
 		}
 
@@ -740,21 +771,23 @@ func (s *Session) HasUnreadOutput() bool {
 
 // WaitForUnreadOutput blocks until new output, process exit, closing, or timeout.
 func (s *Session) WaitForUnreadOutput(timeout time.Duration) bool {
-	s.mu.RLock()
-	if s.outputReadIndex < len(s.outputChunks) || s.isDead || s.closed {
-		unread := s.outputReadIndex < len(s.outputChunks)
-		s.mu.RUnlock()
-		return unread
-	}
-	changed := s.outputChanged
-	s.mu.RUnlock()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	select {
-	case <-changed:
-	case <-timer.C:
+	for {
+		s.mu.RLock()
+		if s.outputReadIndex < len(s.outputChunks) || (s.isDead && s.readFinished) || s.closed {
+			unread := s.outputReadIndex < len(s.outputChunks)
+			s.mu.RUnlock()
+			return unread
+		}
+		changed := s.outputChanged
+		s.mu.RUnlock()
+		select {
+		case <-changed:
+		case <-timer.C:
+			return s.HasUnreadOutput()
+		}
 	}
-	return s.HasUnreadOutput()
 }
 
 // GetRawOutput returns the full buffered output with ANSI escape codes intact.

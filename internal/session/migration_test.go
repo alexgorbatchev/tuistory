@@ -28,6 +28,18 @@ func TestSilentStartupExit(t *testing.T) {
 	}
 }
 
+func TestImmediateOutputBeforeExit(t *testing.T) {
+	for range 100 {
+		s := launchTestSession(t, LaunchOptions{Command: "sh", Args: []string{"-c", "printf final; exit 7"}})
+		if err := s.WaitForData(time.Second); err != nil {
+			t.Fatalf("lost immediate output: %v", err)
+		}
+		if got, err := s.WaitForText("final", time.Second); err != nil || !strings.Contains(got, "final") {
+			t.Fatalf("final output %q / %v", got, err)
+		}
+	}
+}
+
 func TestSessionCallbacksOutsideLock(t *testing.T) {
 	s := launchTestSession(t, LaunchOptions{Command: "sh", Args: []string{"-c", "sleep 0.05; exit 0"}})
 	exited := make(chan struct{})
