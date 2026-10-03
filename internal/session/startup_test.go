@@ -21,6 +21,7 @@ func TestDirectChildOutputSurvivesImmediateExit(t *testing.T) {
 		}
 		text, err := s.WaitForText(want, time.Second)
 		if err != nil || !strings.Contains(text, want) {
+			s.Close("test")
 			t.Fatalf("child %d output %q: %v", i, text, err)
 		}
 		if !s.WaitForExit(time.Second) {
@@ -35,7 +36,7 @@ func TestDirectChildOutputSurvivesImmediateExit(t *testing.T) {
 		}
 		got := s.ReadAll()
 		s.Close("test")
-		if got != want+"\r\n" || s.ExitInfo().ExitCode != 0 {
+		if got != want+"\n" || s.ExitInfo().ExitCode != 0 {
 			t.Fatalf("child %d output/exit: %q / %+v", i, got, s.ExitInfo())
 		}
 	}
