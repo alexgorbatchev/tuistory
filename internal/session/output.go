@@ -254,22 +254,9 @@ func (s *Session) renderTextLocked(filter *StyleFilter, trimEnd bool, showCursor
 
 // WaitForText waits for a plain string or regex pattern to appear.
 func (s *Session) WaitForText(pattern string, timeout time.Duration) (string, error) {
-	var re *regexp.Regexp
-	if strings.HasPrefix(pattern, "/") && strings.LastIndex(pattern, "/") > 0 {
-		lastSlash := strings.LastIndex(pattern, "/")
-		body := pattern[1:lastSlash]
-		flags := pattern[lastSlash+1:]
-		expr := body
-		if strings.Contains(flags, "i") {
-			expr = "(?i)" + expr
-		}
-		parsed, err := regexp.Compile(expr)
-		if err == nil {
-			re = parsed
-		}
-	}
-	if re == nil {
-		re = regexp.MustCompile(regexp.QuoteMeta(pattern))
+	re, err := ParsePattern(pattern)
+	if err != nil {
+		return "", err
 	}
 
 	return s.Text(TextOptions{

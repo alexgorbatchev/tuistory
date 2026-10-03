@@ -3,8 +3,6 @@ package session
 import (
 	"errors"
 	"fmt"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/creack/pty"
@@ -102,21 +100,9 @@ func (s *Session) ClickAt(x, y int) error {
 
 // Click finds pattern on screen and clicks its location.
 func (s *Session) Click(pattern string, first bool, timeout time.Duration) error {
-	var re *regexp.Regexp
-	if strings.HasPrefix(pattern, "/") && strings.LastIndex(pattern, "/") > 0 {
-		lastSlash := strings.LastIndex(pattern, "/")
-		body := pattern[1:lastSlash]
-		flags := pattern[lastSlash+1:]
-		expr := body
-		if strings.Contains(flags, "i") {
-			expr = "(?i)" + expr
-		}
-		if parsed, err := regexp.Compile(expr); err == nil {
-			re = parsed
-		}
-	}
-	if re == nil {
-		re = regexp.MustCompile(regexp.QuoteMeta(pattern))
+	re, err := ParsePattern(pattern)
+	if err != nil {
+		return err
 	}
 
 	deadline := time.Now().Add(timeout)

@@ -159,7 +159,11 @@ func newWaitCommand(c *commandContext) *cobra.Command {
 				return err
 			}
 
-			fmt.Fprint(c.stdout, waitContext(txt, args[0], s.ReadAll()))
+			out, err := waitContext(txt, args[0], s.ReadAll())
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(c.stdout, out)
 			return nil
 		},
 	}
@@ -212,22 +216,20 @@ func (o *snapshotOptions) filter() *session.StyleFilter {
 	return filter
 }
 
-func waitContext(txt, pattern, output string) string {
+func waitContext(txt, pattern, output string) (string, error) {
 	// Context around match: up to 10 lines before and after match line
+	re, err := session.ParsePattern(pattern)
+	if err != nil {
+		return "", err
+	}
+	loc := re.FindStringIndex(output)
+	if loc == nil {
+		return strings.TrimRight(txt, " \t\r\n"), nil
+	}
+	matchIndex := strings.Count(output[:loc[0]], "\n")
 	allLines := strings.Split(output, "\n")
-	matchIndex := -1
-	for i, line := range allLines {
-		if strings.Contains(line, pattern) {
-			matchIndex = i
-			break
-		}
-	}
-
-	if matchIndex == -1 {
-		return strings.TrimRight(txt, " \t\r\n")
-	}
 
 	start := max(0, matchIndex-10)
 	end := min(len(allLines), matchIndex+11)
-	return strings.TrimRight(strings.Join(allLines[start:end], "\n"), " \t\r\n")
+	return strings.TrimRight(strings.Join(allLines[start:end], "\n"), " \t\r\n"), nil
 }
