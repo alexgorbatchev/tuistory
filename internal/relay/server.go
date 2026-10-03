@@ -338,15 +338,11 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 						_ = attachedSession.Resize(ctrl.Cols, ctrl.Rows)
 					}
 
-					// Send all buffered raw output
-					raw := attachedSession.GetRawOutput()
-					if len(raw) > 0 {
-						_ = conn.Write(ctx, websocket.MessageText, []byte(raw))
-					}
-
-					// Subscribe to live PTY data
-					unsubData = attachedSession.Subscribe(func(data string) {
-						_ = conn.Write(ctx, websocket.MessageText, []byte(data))
+					// Atomically replay history and register live delivery, without gaps.
+					unsubData = attachedSession.SubscribeWithBuffer(func(ctx context.Context, data string) {
+						if err := conn.Write(ctx, websocket.MessageBinary, []byte(data)); err != nil {
+							cancel()
+						}
 					})
 
 					// Forward exit notification
