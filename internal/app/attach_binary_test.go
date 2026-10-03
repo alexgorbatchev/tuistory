@@ -115,11 +115,14 @@ func TestAttachReplaysRetainedTerminalBytes(t *testing.T) {
 			go func() { data := make([]byte, len(history)); n, _ := io.ReadFull(output, data); captured <- data[:n] }()
 			var got []byte
 			ended := false
+			readDone := false
 			select {
 			case got = <-captured:
+				readDone = true
 			case <-done:
 				_ = stdout.Close() // Release reader after premature attach termination.
 				got = <-captured
+				readDone = true
 				t.Errorf("attach ended before retained output replay")
 				ended = true
 			case <-time.After(2 * time.Second):
@@ -131,6 +134,9 @@ func TestAttachReplaysRetainedTerminalBytes(t *testing.T) {
 				<-done
 			}
 			_ = stdout.Close()
+			if !readDone {
+				got = <-captured
+			}
 			if string(got) != history {
 				t.Errorf("replayed %d bytes, want %d", len(got), len(history))
 			}
