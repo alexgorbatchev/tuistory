@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -244,6 +245,23 @@ func TestSessionMetadataAndLifecycle(t *testing.T) {
 	}
 	if err := s.Resize(25, 3); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCloseEscalatesForSignalIgnoringProcess(t *testing.T) {
+	s := launchTestSession(t, LaunchOptions{Command: "sh", Args: []string{"-c", "trap '' HUP TERM; printf ready; exec sleep 60"}})
+	if err := s.WaitForData(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	s.Close("test")
+	if s.WaitForExit(100 * time.Millisecond) {
+		t.Fatal("process did not ignore TERM")
+	}
+	if !s.WaitForExit(killGraceDuration + time.Second) {
+		t.Fatal("Close did not escalate to SIGKILL")
+	}
+	if info := s.ExitInfo(); info == nil || info.Signal != int(syscall.SIGKILL) {
+		t.Fatalf("expected SIGKILL exit, got %+v", info)
 	}
 }
 
