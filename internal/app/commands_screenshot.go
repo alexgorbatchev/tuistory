@@ -57,6 +57,12 @@ func (o *screenshotOptions) run(c *commandContext) error {
 	outputPath := o.output
 	if outputPath == "" {
 		outputPath = filepath.Join(os.TempDir(), fmt.Sprintf("tuistory-screenshot-%d.png", time.Now().UnixMilli()))
+	} else if !filepath.IsAbs(outputPath) {
+		outputPath = filepath.Join(c.cwd, outputPath)
+	}
+	outputPath, err = filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("resolving screenshot file %q: %w", o.output, err)
 	}
 
 	if err := os.WriteFile(outputPath, data, 0644); err != nil {
