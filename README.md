@@ -1,493 +1,190 @@
-<div align="center">
-    <br />
-    <br />
-    <h3>tuistory</h3>
-    <p>Run dev servers and TUIs that AI agents can read, wait on, and type into.</p>
-    <br />
-    <br />
-</div>
+A Go rewrite of the original [tuistory](https://github.com/remorses/tuistory) by [remorses](https://github.com/remorses). `tuistory` runs background dev servers and terminal commands in named pseudo-terminal sessions that AI agents can inspect, wait on, and type into while humans can attach to view live output.
 
-**tmux for AI agents.** tuistory wraps any terminal command in a named background session. Agents can read logs, wait for specific output, take screenshots, and type into the process. Humans can attach to the same session at any time to see exactly what the agent sees, interact with the process, then detach and let the agent continue. Both share the same terminal state.
+# What It Does
 
-```
-                       package.json: "dev": "tuistory -- next dev"
+- **Named background terminal sessions**: Spawns long-lived processes inside a background relay daemon that persists across tool calls and CLI invocations.
+- **Reactive output waiting**: Replaces blind `sleep` with pattern-matching wait and debounce idle detection so scripts react the instant output settles.
+- **Terminal screen capture**: Extracts full terminal buffers, style-filtered text (bold, italic, color), and pixel-perfect PNG screenshots.
+- **Interactive input simulation**: Sends characters with per-keystroke timing, key chords, mouse clicks, and terminal resize events.
+- **Human-in-the-loop attachment**: Lets humans attach interactively to live sessions with full-screen TUI streaming and keystroke forwarding.
+- **Process tree lifecycle**: Reaps child and grandchild process groups on exit to prevent orphaned background servers.
 
-  Human runs `pnpm dev`                        Agent runs `pnpm dev`
-        │                                            │
-        ▼                                            ▼
-  ┌──────────────────┐                   ┌─────────────────────────────┐
-  │ Auto-attaches    │                   │ Runs in background          │
-  │ to the terminal  │                   │                             │
-  │ (like running    │                   │ tuistory read -s …          │
-  │  next dev        │                   │ tuistory -s … wait "ready"  │
-  │  directly)       │                   │ tuistory -s … snapshot      │
-  └──────────────────┘                   └─────────────────────────────┘
-                                                     │
-                    Human runs                       │
-                    `tuistory attach`                │
-                          │                          │
-                          ▼                          ▼
-                   ┌────────────────────────────────────────┐
-                   │  Same background session               │
-                   │                                        │
-                   │  Human sees live terminal output       │
-                   │  Agent reads logs, waits, types        │
-                   │  Both share the same terminal state    │
-                   │                                        │
-                   │  Ctrl+C twice ► detach                 │
-                   │  Ctrl+X twice ► kill process           │
-                   └────────────────────────────────────────┘
-```
+# How It Works
 
-## Add tuistory to your dev script
+- Starts or reuses the background relay daemon listening on `127.0.0.1:19977`.
+- Spawns the specified command inside a virtual pseudo-terminal (PTY) with configurable rows and columns.
+- Streams PTY output through an in-memory headless terminal emulator that tracks cursor position, screen dimensions, colors, and alternate buffers.
+- Forwards commands (`read`, `wait`, `snapshot`, `type`, `press`, `click`, `restart`, `close`) to the daemon over local HTTP.
+- Returns output and exit codes immediately to callers without blocking agent tools on long-running processes.
 
-The simplest way to use tuistory: replace your `dev` command in `package.json`.
+# How it Really Works
 
-```json
-{
-  "scripts": {
-    "dev": "tuistory -- next dev"
-  }
-}
-```
+- The relay daemon runs detached on `127.0.0.1:19977` and pins its working directory to `$HOME` to prevent stale filesystem handles across directory deletions.
+- Port ownership is verified before commands run; if an orphaned or unresponsive process squats on the port, the client terminates it and spawns a fresh daemon.
+- Child processes are launched in dedicated POSIX sessions; closing or terminating a session signals the entire process group so background servers cannot survive as orphans.
+- Output is buffered in an in-memory ring buffer (up to 1MB) and stripped of ANSI escape codes for `read`, while raw escape sequences are preserved for live WebSocket attach clients.
+- The daemon enforces localhost-only security middleware that rejects requests containing `Origin` headers, cross-site fetch markers, or non-loopback `Host` headers to prevent browser DNS rebinding attacks.
+- When `AGENT=1` is set, help and diagnostic outputs switch automatically to token-conservative structured key-value format.
 
-The session name is auto-derived from `<cwd-basename>-<command>` in kebab-case. A project in `~/myapp` running `next dev` gets session name `myapp-next-dev`.
+# Installation
 
-That's it. This one change gives you three things:
-
-1. **Humans get the same experience.** `pnpm dev` auto-attaches your terminal to the session. It looks and feels identical to running `next dev` directly. Press `Ctrl+C` to detach (the session keeps running in the background).
-
-2. **Agents don't hang.** Without tuistory, an agent running `pnpm dev` starts a long-lived process that blocks its tool call until timeout. With tuistory, the dev server launches in the background and the command returns immediately. The agent can move on to other work.
-
-3. **Agents can inspect the server.** Once the session exists, agents read logs, wait for "ready" strings, check for errors, and even type commands into REPLs. All through simple CLI calls that return instantly.
-
-### What agents can do with a running session
+Download the prebuilt binary for your platform from the [latest release](https://github.com/remorses/tuistory/releases/latest), replacing `X.X.X` with the version shown on that page.
 
 ```bash
-# Read recent output (like checking server logs)
-tuistory read -s x
+# macOS (Apple Silicon)
+curl -sSL https://github.com/remorses/tuistory/releases/latest/download/tuistory_X.X.X_darwin_arm64.tar.gz | tar -xz -C ~/.local/bin
 
-# Read the entire output buffer
-tuistory read -s x --all
-
-# Wait for the server to be ready (replaces sleep)
-tuistory -s x wait "ready on" --timeout 30000
-
-# Wait for output to stabilize (when you don't know what to expect)
-tuistory -s x wait-idle --timeout 10000
-
-# See the current terminal screen
-tuistory -s x snapshot --trim
-
-# Capture terminal as a PNG image
-tuistory -s x screenshot
-
-# Restart the dev server after code changes
-tuistory -s x restart
-
-# Type into the process (for REPLs, debuggers, interactive CLIs)
-tuistory -s x type "rs"
-tuistory -s x press enter
-
-# Stop the server
-tuistory -s x press ctrl c
-tuistory -s x close
+# Linux (x86_64)
+curl -sSL https://github.com/remorses/tuistory/releases/latest/download/tuistory_X.X.X_linux_amd64.tar.gz | tar -xz -C ~/.local/bin
 ```
 
-### Reuse and idempotency
-
-Running `pnpm dev` again while the session is alive **reattaches** (for humans) or prints session info (for agents) instead of failing. Agents never get "port already in use" errors; they get a message telling them the session is already running and how to read its output.
-
-### Attach to a running session (humans only)
-
-<!-- Agents: do not run tuistory attach. Use read, snapshot, and wait instead. -->
-
-Use `tuistory attach` to connect your terminal to any running session. This works like `tmux attach`: you see the full terminal output exactly as if you ran the command yourself. You can type, scroll, and interact normally. Press `Ctrl+C` to detach without stopping the process.
+# Quick Start
 
 ```bash
-# Attach to a specific session
-tuistory attach -s x
+# Launch a background session (session name auto-derived from cwd and command)
+tuistory -- ./server --port 3000
 
-# Pick from a list of running sessions
-tuistory attach
-```
+# Wait reactively for the server to be ready
+tuistory -s myapp-server wait "/ready|listening/i" --timeout 30000
 
-While attached, press `Ctrl+C` twice to **detach** (the process keeps running), or `Ctrl+X` twice to **kill** the process and close the session.
+# Read new process output
+tuistory read -s myapp-server
 
-This is useful when an agent started a dev server or a long-running process and you want to see what's happening. `tuistory sessions` lists all active sessions, then `tuistory attach` connects you to one.
-
-## Installation
-
-```bash
-npm install tuistory
-```
-
-As a global CLI:
-
-```bash
-npm install -g tuistory
-
-# Or use directly
-npx tuistory --help
-bunx tuistory --help
-```
-
-## Agent Skill
-
-This package ships a skill file that teaches AI coding agents how and when to
-use it. Install it with:
-
-```bash
-npx -y skills add remorses/tuistory
-```
-
-## CLI Quick Start
-
-A full workflow controlling Claude Code:
-
-```bash
-# Launch Claude Code
-tuistory -s claude --cols 150 --rows 45 -- claude
-
-# Wait for it to load
-tuistory -s claude wait "Claude Code" --timeout 15000
-
-# Type a prompt
-tuistory -s claude type "what is 2+2? reply with just the number"
-tuistory -s claude press enter
-
-# Wait for the response
-tuistory -s claude wait "/[0-9]+/" --timeout 30000
-
-# Get terminal snapshot
-tuistory -s claude snapshot --trim
-
-# Read all process output
-tuistory read -s claude --all
+# Capture the visible terminal screen
+tuistory -s myapp-server snapshot --trim
 
 # Close the session
-tuistory -s claude close
+tuistory -s myapp-server close
 ```
 
-## CLI Commands
-
+Sample Output:
 ```
-tuistory -- <command>         Launch a terminal session
-tuistory snapshot             Current terminal screen as text
-tuistory read                 Process output since last read
-tuistory screenshot           Capture terminal as PNG image
-tuistory type <text>          Type text character by character
-tuistory press <key> [keys]   Press key(s): enter, ctrl c, alt f4
-tuistory click <pattern>      Click on text matching pattern
-tuistory wait <pattern>       Wait for text (supports /regex/)
-tuistory wait-idle            Wait for terminal to stabilize
-tuistory scroll <up|down>     Scroll the terminal
-tuistory resize <cols> <rows> Resize terminal
-tuistory attach               Attach interactively to a session (humans only)
-tuistory restart              Restart session (same command/cwd/env)
-tuistory close                Close a session
-tuistory sessions             List active sessions
+Session "myapp-server" is now running in the background.
+
+  command: ./server --port 3000
+  cwd:     /home/user/myapp
+  cols:    120
+  rows:    36
+
+The process is alive but you are not attached to it.
 ```
 
-### Common Options
+# Options & Flags
 
+### Global Options
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--help` | `-h` | `false` | Display help screen and command tree |
+| `--version` | `-v` | `false` | Display binary version |
+
+### `tuistory [options] -- <command>` / `tuistory launch [command]`
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--session <name>` | `-s` | auto | Session name (defaults to `<cwd-basename>-<hash>-<command>`) |
+| `--cols <n>` | | `120` | Terminal columns |
+| `--rows <n>` | | `36` | Terminal rows |
+| `--cwd <path>` | | caller cwd | Working directory for child process |
+| `--env <k=v>` | | `[]` | Environment variable (repeatable) |
+| `--background` | | `false` | Run in background without attaching |
+| `--no-wait` | | `false` | Skip waiting for initial process output |
+| `--timeout <ms>` | | `5000` | Initial output wait timeout in milliseconds |
+
+### `tuistory snapshot`
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--session <name>` | `-s` | (required) | Target session name |
+| `--trim` | | `false` | Strip trailing whitespace and empty rows |
+| `--json` | | `false` | Output structured JSON metadata |
+| `--immediate` | | `false` | Capture immediately without waiting for terminal idle state |
+| `--bold` | | `false` | Extract only bold text cells |
+| `--italic` | | `false` | Extract only italic text cells |
+| `--underline` | | `false` | Extract only underlined text cells |
+| `--fg <color>` | | `""` | Extract only text cells matching foreground color hex |
+| `--bg <color>` | | `""` | Extract only text cells matching background color hex |
+| `--no-cursor` | | `false` | Hide cursor marker (`█`) in snapshot output |
+
+### `tuistory read`
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--session <name>` | `-s` | (required) | Target session name |
+| `--all` | | `false` | Return entire buffered output without advancing read cursor |
+| `--trim` | | `false` | Trim trailing whitespace from output |
+| `--follow` | | `false` | Block until new output arrives |
+| `--timeout <ms>` | | `5000` | Timeout for `--follow` in milliseconds |
+
+### `tuistory wait <pattern>`
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--session <name>` | `-s` | (required) | Target session name |
+| `--timeout <ms>` | | `5000` | Maximum wait duration in milliseconds |
+
+### `tuistory wait-idle`
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--session <name>` | `-s` | (required) | Target session name |
+| `--timeout <ms>` | | `500` | Maximum wait duration in milliseconds |
+
+### `tuistory screenshot`
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--session <name>` | `-s` | (required) | Target session name |
+| `--output <path>` | `-o` | temp file | PNG file destination path |
+| `--width <px>` | | auto | Image width in pixels |
+| `--font-size <px>` | | `14` | Font size in pixels |
+| `--line-height <n>`| | `1.5` | Line height multiplier |
+| `--background <c>` | | `#1a1b26` | Background color hex |
+| `--foreground <c>` | | `#c0caf5` | Text color hex |
+| `--pixel-ratio <n>`| | `1` | Scaling multiplier for HiDPI |
+| `--padding <cells>`| | `2` | Outer frame padding in terminal cells |
+| `--immediate` | | `false` | Do not wait for idle before capturing |
+
+### `tuistory click <pattern>`
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--session <name>` | `-s` | (required) | Target session name |
+| `--first` | | `false` | Click first occurrence if multiple matches found |
+| `--timeout <ms>` | | `5000` | Timeout in milliseconds waiting for pattern |
+
+### `tuistory restart`
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--session <name>` | `-s` | (required) | Target session name |
+| `--timeout <ms>` | | `5000` | Graceful shutdown timeout in milliseconds |
+| `--no-wait` | | `false` | Skip waiting for initial output after relaunch |
+
+# Dev Script Convention
+
+Wrap your project's dev server command with `tuistory --` so AI agents never hang on long-running processes and humans get auto-attached:
+
+```just
+# Example in a justfile
+dev:
+    tuistory -- ./server --port 3000
 ```
--s, --session <name>  Session name (defaults to <cwd-basename>-<command>)
---cols <n>            Terminal columns (default: 120)
---rows <n>            Terminal rows (default: 36)
---env <key=value>     Environment variable (repeatable)
---timeout <ms>        Wait timeout in milliseconds
---trim                Trim whitespace from snapshot
---json                Output as JSON
---all                 For read: return entire buffer
---follow              For read: block until new output
-```
 
-### Option ordering with `--`
-
-Everything after `--` is the command to run. tuistory options **must come before** `--`, not after it. Anything after `--` is passed verbatim to the child process.
+Or in shell scripts / task runners:
 
 ```bash
-# Correct: options before --, command after
-tuistory -s myserver --cols 150 -- node server.js --port 3000
-
-# Wrong: tuistory options after -- are ignored
-tuistory -- node server.js -s myserver --cols 150
+tuistory -- ./server --port 3000
 ```
 
-When no `-s` is given, the session name is auto-derived from `<cwd-basename>-<command>` in kebab-case. For most use cases (especially `package.json` scripts) you don't need to pass `-s` at all.
+- **Humans**: Running the dev command auto-attaches your terminal to the session with live output and keyboard interaction. Press `Ctrl+C` twice to detach while keeping the process running in the background.
+- **Agents**: Running the dev command launches the process in the background and returns immediately, allowing the agent to inspect output with `read`, `wait`, and `snapshot` without blocking its turn.
+- **Idempotency**: Running the command while a session is already alive reuses the running session instead of failing with port conflicts.
 
-### Chaining tools that use `--`
+# Passthrough Mode
 
-Tools like [sigillo](https://github.com/remorses/sigillo) and [kimaki tunnel](https://github.com/remorses/kimaki) also use `--` to separate their options from a child command. You can nest them because each tool only consumes the **first** `--` it sees; the rest passes through verbatim.
+When running inside `TRAFORO_URL`, `SIGILLO`, or `TUISTORY_SESSION`, `tuistory` skips daemon creation and runs the command directly in the foreground with inherited stdio and signal forwarding.
 
-```json
-{
-  "scripts": {
-    "dev": "tuistory -- sigillo run -- kimaki tunnel -- next dev"
-  }
-}
-```
+# License
 
-tuistory should always be the **outermost wrapper** so the entire process tree lives in one session that agents can read, wait on, and restart.
-
-## Background Processes (replaces tmux)
-
-tuistory replaces tmux for running background processes. The key advantage: **reactive waiting** instead of blind `sleep`.
-
-### Before: tmux
-
-```bash
-tmux new-session -d -s dev
-tmux send-keys -t dev "pnpm dev" Enter
-sleep 5  # blind guess
-tmux capture-pane -t dev -p | grep "ready"
-tmux send-keys -t dev C-c
-tmux kill-session -t dev
-```
-
-`sleep 5` is a blind guess. Too short and the server isn't ready. Too long and you waste time. `capture-pane` only shows the last screenful.
-
-### After: tuistory
-
-```bash
-tuistory -- pnpm dev
-tuistory -s x wait "ready on" --timeout 30000
-tuistory read -s x
-tuistory -s x press ctrl c
-tuistory -s x close
-```
-
-`wait` reacts as fast as the terminal updates (~75ms). `read` returns the full output stream, not just the visible screen.
-
-## Environment Inheritance
-
-tuistory forwards the **full environment** from the calling shell to child processes. `node_modules/.bin` entries injected by pnpm, bun, and npm are preserved, so local binaries work without prefixing:
-
-```bash
-# These work because tuistory inherits the caller's PATH
-tuistory -- vitest run
-tuistory -- tsc --noEmit
-```
-
-Explicit `--env` flags override inherited values:
-
-```bash
-tuistory --env NODE_ENV=production -- my-server
-```
-
-## Tips for Automation
-
-**Run `snapshot` after every action.** Terminal apps are stateful and may show dialogs or errors. Always check the current state:
-
-```bash
-tuistory -s mysession press enter
-tuistory -s mysession snapshot --trim
-```
-
-**Use `read` for log-heavy processes.** `snapshot` only shows the visible screen. `read` gives you the full output stream:
-
-```bash
-tuistory -- npm test
-tuistory -s x wait "Tests:" --timeout 60000
-tuistory read -s x
-```
-
-**Use `wait-idle` when you don't know what to wait for.** It waits until the terminal stops receiving data (~200ms of silence by default):
-
-```bash
-tuistory -- npm test
-tuistory -s x wait-idle --timeout 10000
-tuistory read -s x
-```
-
-**Use `wait` for async operations.** Don't assume commands complete instantly:
-
-```bash
-tuistory -s mysession type "long-running-command"
-tuistory -s mysession press enter
-tuistory -s mysession wait "Done" --timeout 60000
-```
-
-## Daemon Architecture
-
-tuistory runs a background **relay daemon** that holds all sessions in memory. The first CLI command auto-starts it; subsequent commands connect to the existing one.
-
-### Auto-restart on version upgrade
-
-When you upgrade tuistory, the next CLI command detects the version mismatch and **automatically restarts the daemon**.
-
-```
-┌───────────────┐     GET /version     ┌────────────────┐
-│  CLI v1.5.0   │ ──────────────────►  │ Daemon v1.4.0  │
-│               │ ◀──────────────────  │                │
-│               │   { version: 1.4.0 } │                │
-│               │                      │                │
-│  v1.5 > v1.4  │                      │                │
-│  ► kill old   │ ─── SIGTERM ──────►  │    (dies)      │
-│  ► spawn new  │                      └────────────────┘
-│               │                      ┌────────────────┐
-│               │ ─── spawn ────────►  │ Daemon v1.5.0  │
-│               │    poll /version     │                │
-│               │ ◀── { version: 1.5 } │                │
-│  ► proceed    │                      │   (ready)      │
-└───────────────┘                      └────────────────┘
-```
-
-The restart is **race-safe**: a file lock prevents two concurrent CLI invocations from both trying to restart. The daemon only restarts when the CLI version is **newer** than the running daemon.
-
-### Manual daemon control
-
-```bash
-tuistory daemon-stop    # Stops daemon and closes all sessions
-tuistory log-path       # Print the daemon log file path
-```
-
-### Security model
-
-The daemon runs a real shell PTY, so only your own terminal should reach it. Three checks enforce that:
-
-- **Bound to `127.0.0.1`.** Nothing on your network or the internet can connect.
-- **Origin header rejected.** Browsers always set it, CLI tools never do — so a malicious website you visit cannot open the attach WebSocket or inject keystrokes into your sessions.
-- **Host header allow-listed.** Only `127.0.0.1`, `localhost`, and `[::1]` are accepted, which blocks DNS rebinding tricks.
-
-Anything else gets `403` and is logged to `/tmp/tuistory/relay-server.log`.
-
-## Library Usage (Playwright for terminals)
-
-Use tuistory programmatically in tests or scripts:
-
-```ts
-import { launchTerminal } from 'tuistory'
-
-const session = await launchTerminal({
-  command: 'claude',
-  args: [],
-  cols: 150,
-  rows: 45,
-})
-
-await session.waitForText('claude', { timeout: 10000 })
-
-const initialText = await session.text()
-expect(initialText).toMatchInlineSnapshot(`
-  "
-  ╭────────────────────────────────────────────────────────────────────────╮
-  │ Welcome to Claude Code                                                │
-  ╰────────────────────────────────────────────────────────────────────────╯
-  "
-`)
-
-await session.type('/help')
-await session.press('enter')
-
-const output = session.read()
-const allOutput = session.readAll()
-
-await session.press(['ctrl', 'c'])
-session.close()
-```
-
-## Library API
-
-### `launchTerminal(options)`
-
-Launch a terminal session.
-
-```ts
-const session = await launchTerminal({
-  command: 'my-cli',
-  args: ['--flag'],
-  cols: 120,
-  rows: 36,
-  cwd: '/path/to/dir',
-  env: { MY_VAR: 'value' },
-  idleDelayMs: 200,
-})
-```
-
-`idleDelayMs` controls how long the PTY must stop producing output before the
-session is considered idle. It defaults to 200ms so multi-write TUI renders are
-captured as complete frames. Use a shorter delay only when the application
-renders atomically or your test follows actions with a stronger readiness
-predicate. The default `waitIdle()` timeout grows with longer configured delays;
-an explicit `waitIdle({ timeout })` still takes precedence.
-
-### `session.type(text)`
-
-Type a string character by character.
-
-```ts
-await session.type('hello world')
-```
-
-### `session.press(keys)`
-
-Press a single key or a chord.
-
-```ts
-await session.press('enter')
-await session.press('tab')
-await session.press(['ctrl', 'c'])
-await session.press(['ctrl', 'shift', 'a'])
-```
-
-**Keys:** `enter`, `esc`, `tab`, `space`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`
-
-**Modifiers:** `ctrl`, `alt`, `shift`, `meta`
-
-### `session.text(options?)`
-
-Get the current terminal screen text.
-
-```ts
-const text = await session.text()
-
-// Filter by style
-const boldText = await session.text({ only: { bold: true } })
-const coloredText = await session.text({ only: { foreground: '#ff0000' } })
-```
-
-### `session.read()`
-
-Read new process output since the last `read()` call. Returns clean text with ANSI codes stripped.
-
-```ts
-const newOutput = session.read()
-const allOutput = session.readAll()
-```
-
-### `session.waitForText(pattern, options?)`
-
-Wait for text or regex to appear.
-
-```ts
-await session.waitForText('Ready')
-await session.waitForText(/Loading\.\.\./, { timeout: 10000 })
-```
-
-### `session.click(pattern, options?)`
-
-Click on text matching a pattern.
-
-```ts
-await session.click('Submit')
-await session.click(/Button \d+/, { first: true })
-```
-
-### `session.close()`
-
-Close the terminal session.
-
-```ts
-session.close()
-```
-
-## Projects using tuistory
-
-- [Termcast](https://github.com/remorses/termcast): A Raycast API re-implementation for the terminal. Agents use tuistory to autonomously convert Raycast extensions into TUIs.
-- [Kimaki](https://github.com/remorses/kimaki): Discord bot agents that use tuistory to control TTY processes like opencode, claude code and debuggers.
-
-## License
-
-MIT
+[MIT License](LICENSE) (c) 2026 Alex Gorbatchev
