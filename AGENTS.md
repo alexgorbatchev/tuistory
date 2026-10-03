@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-02 06:50
-last_modified: 2026-10-02 12:35
+last_modified: 2026-10-02 21:30
 status: current
 ---
 
@@ -72,6 +72,13 @@ In Go, `os.Args` preserves `--` exactly. Options must precede `--`; everything a
 - Every agent-mode help screen starts with an alert to read `AGENT=1 tuistory skill` first.
 - Keep `cmd/tuistory/SKILL.md` and `skills/tuistory/SKILL.md` in sync in the same change whenever public commands, arguments, flags, shorthands, types, defaults, accepted values, environment variables, outputs, errors, or side effects change.
 - Verify against implementation and run `just check`. Maintain unit and E2E test coverage of the live command tree.
+
+## Migration Repair Workflow
+
+- Address every migration-review finding and due-diligence item; add newly verified defects to the repair scope and fix them.
+- Maintain `.tmp/migration-fixes-checklist.md` with all findings and validation evidence. Check off items only after their verified fixes land on `main`, recording the landing commit.
+- Coordinate parallel agents in isolated `.workspaces/` worktrees with explicit file ownership. Integrate and verify their commits before landing them on `main`.
+- The current migration repair authorizes the reviewed public CLI behavior corrections and verified associated defects; it does not authorize releases or deployments.
 
 ## Boundaries
 
