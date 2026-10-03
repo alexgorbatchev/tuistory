@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -60,6 +61,40 @@ func TestSessionCallbacksOutsideLock(t *testing.T) {
 	case <-closing:
 	case <-time.After(time.Second):
 		t.Fatal("closing callback deadlocked")
+	}
+}
+
+func TestLifecycleCallbackUnsubscribe(t *testing.T) {
+	s := launchTestSession(t, LaunchOptions{Command: "cat"})
+	var exits, closes atomic.Int32
+	unexit := s.OnExit(func(ExitInfo) { exits.Add(1) })
+	unclose := s.OnClosing(func(string) { closes.Add(1) })
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(unexit)
+		wg.Go(unclose)
+	}
+	wg.Wait()
+	s.Close("reason")
+	if !s.WaitForExit(time.Second) {
+		t.Fatal("process did not exit")
+	}
+	if exits.Load() != 0 || closes.Load() != 0 {
+		t.Fatal("unsubscribed callbacks invoked")
+	}
+	lateClose := s.OnClosing(func(reason string) {
+		if reason != "reason" {
+			t.Errorf("late reason %q", reason)
+		}
+		closes.Add(1)
+	})
+	lateExit := s.OnExit(func(ExitInfo) { exits.Add(1) })
+	lateClose()
+	lateClose()
+	lateExit()
+	lateExit()
+	if closes.Load() != 1 || exits.Load() != 1 {
+		t.Fatalf("late callback counts %d,%d", closes.Load(), exits.Load())
 	}
 }
 

@@ -92,9 +92,10 @@ type Session struct {
 	startedAt  time.Time
 	exitedAt   *time.Time
 
-	isDead   bool
-	exitInfo *ExitInfo
-	closed   bool
+	isDead      bool
+	exitInfo    *ExitInfo
+	closed      bool
+	closeReason string
 
 	hasReceivedData bool
 	dataWaiters     []chan struct{}
@@ -110,10 +111,21 @@ type Session struct {
 	subscribers      map[int]chan string
 	nextSubscriberID int
 
-	exitListeners  []func(ExitInfo)
-	closeListeners []func(string)
+	exitListeners  []exitListener
+	closeListeners []closeListener
+	nextListenerID int
 
 	termcastDbSuffix string
+}
+
+type exitListener struct {
+	id       int
+	callback func(ExitInfo)
+}
+
+type closeListener struct {
+	id       int
+	callback func(string)
 }
 
 var ansiRegex = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[PX^_][^\x1b]*\x1b\\|[NOnEHM78])`)
@@ -324,7 +336,7 @@ func (s *Session) waitLoop() {
 	s.exitListeners = nil
 	s.mu.Unlock()
 	for _, fn := range listeners {
-		fn(info)
+		fn.callback(info)
 	}
 }
 
@@ -984,21 +996,43 @@ func (s *Session) KillProcess() {
 }
 
 // OnExit registers a listener called when the PTY process exits.
-func (s *Session) OnExit(cb func(ExitInfo)) {
+func (s *Session) OnExit(cb func(ExitInfo)) func() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.exitInfo != nil {
-		go cb(*s.exitInfo)
-		return
+		info := *s.exitInfo
+		s.mu.Unlock()
+		cb(info)
+		return func() {}
 	}
-	s.exitListeners = append(s.exitListeners, cb)
+	id := s.nextListenerID
+	s.nextListenerID++
+	s.exitListeners = append(s.exitListeners, exitListener{id: id, callback: cb})
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.exitListeners = slices.DeleteFunc(s.exitListeners, func(listener exitListener) bool { return listener.id == id })
+	}
 }
 
 // OnClosing registers a callback for session closing.
-func (s *Session) OnClosing(cb func(string)) {
+func (s *Session) OnClosing(cb func(string)) func() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.closeListeners = append(s.closeListeners, cb)
+	if s.closed {
+		reason := s.closeReason
+		s.mu.Unlock()
+		cb(reason)
+		return func() {}
+	}
+	id := s.nextListenerID
+	s.nextListenerID++
+	s.closeListeners = append(s.closeListeners, closeListener{id: id, callback: cb})
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.closeListeners = slices.DeleteFunc(s.closeListeners, func(listener closeListener) bool { return listener.id == id })
+	}
 }
 
 // WaitForExit waits up to timeout for the child process to exit.
@@ -1024,6 +1058,7 @@ func (s *Session) Close(reason string) {
 		return
 	}
 	s.closed = true
+	s.closeReason = reason
 	close(s.outputChanged)
 	s.outputChanged = make(chan struct{})
 
@@ -1056,7 +1091,7 @@ func (s *Session) Close(reason string) {
 	cwd := s.cwd
 	s.mu.Unlock()
 	for _, fn := range listeners {
-		fn(reason)
+		fn.callback(reason)
 	}
 
 	if ptmx != nil {
