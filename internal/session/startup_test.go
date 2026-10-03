@@ -48,9 +48,7 @@ func TestFailedStartReleasesPTYDescriptors(t *testing.T) {
 		{Command: "echo", Cwd: "/nonexistent-startup-directory"},
 	}
 	for _, opt := range opts {
-		if _, err := New(opt); err == nil {
-			t.Fatal("invalid child started")
-		}
+		assertFailedStart(t, opt)
 	}
 	before := descriptorNames(t)
 	probe, err := os.Open(os.DevNull)
@@ -66,15 +64,33 @@ func TestFailedStartReleasesPTYDescriptors(t *testing.T) {
 	}
 	for range 50 {
 		for _, opt := range opts {
-			if _, err := New(opt); err == nil {
-				t.Fatal("invalid child started")
-			}
+			assertFailedStart(t, opt)
 		}
 	}
 	after := descriptorNames(t)
 	if len(after) > len(before) {
 		t.Fatalf("failed starts leaked descriptors: %d -> %d", len(before), len(after))
 	}
+}
+
+func assertFailedStart(t *testing.T, opt LaunchOptions) {
+	t.Helper()
+	s, err := New(opt)
+	if err != nil {
+		return
+	}
+	if s == nil {
+		t.Fatalf("invalid child started: options=%+v; nil session without error", opt)
+	}
+	pid := s.cmd.Process.Pid
+	exited := s.WaitForExit(time.Second)
+	info := s.ExitInfo()
+	output := s.ReadAll()
+	s.Close("unexpected-start")
+	if !exited {
+		s.WaitForExit(time.Second)
+	}
+	t.Fatalf("invalid child started: options=%+v; path=%q; pid=%d; exited=%v; exit=%+v; output=%q", opt, s.cmd.Path, pid, exited, info, output)
 }
 
 func descriptorNames(t *testing.T) []string {
