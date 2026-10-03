@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-02 06:50
-last_modified: 2026-10-02 22:46
+last_modified: 2026-10-03 08:46
 status: current
 ---
 
@@ -78,6 +78,7 @@ In Go, `os.Args` preserves `--` exactly. Options must precede `--`; everything a
 - Coordinate parallel agents in isolated `.workspaces/` worktrees with explicit file ownership. Integrate and verify their commits before landing them on `main`.
 - The current migration repair authorizes the reviewed public CLI behavior corrections and verified associated defects; it does not authorize releases or deployments.
 - The user approved `golang.org/x/mod/semver` (`golang.org/x/mod v0.41.0`) for daemon semantic-version comparison during this repair.
+- The follow-up repair covers all eight findings and three due-diligence items in the supplied review attachment: concurrent launch ownership, joined shutdown, caller PATH, input validation, resize bounds, regex parsing, caller-relative screenshots, terminal replies, release verification, installation examples, and per-request agent output. Include verified associated defects in the same checklist and verification workflow.
 
 ## Boundaries
 

@@ -24,25 +24,23 @@ A Go rewrite of the original [tuistory](https://github.com/remorses/tuistory) by
 - Child processes are launched in dedicated POSIX sessions; closing or terminating a session signals the entire process group so background servers cannot survive as orphans.
 - Output is buffered in an in-memory ring buffer (up to 1MB) and stripped of ANSI escape codes for `read`, while raw escape sequences are preserved for live WebSocket attach clients.
 - The daemon enforces localhost-only security middleware that rejects requests containing `Origin` headers, cross-site fetch markers, or non-loopback `Host` headers to prevent browser DNS rebinding attacks.
-- When `AGENT=1` is set, help and diagnostic outputs switch automatically to token-conservative structured key-value format.
+- When `AGENT=1` is set, help and diagnostics use compact output; `sessions` emits one JSON object per line. The daemon uses each caller's environment to select the output mode.
 
 # Installation
 
-Download the prebuilt binary for your platform from the [latest release](https://github.com/remorses/tuistory/releases/latest), replacing `X.X.X` with the version shown on that page.
+Download the Go binary for your platform from this fork's [latest release](https://github.com/alexgorbatchev/tuistory/releases/latest); this example installs the published `v0.0.1` archive for macOS Apple Silicon into `~/.local/bin`, which must be on your `PATH`.
 
 ```bash
 # macOS (Apple Silicon)
-curl -sSL https://github.com/remorses/tuistory/releases/latest/download/tuistory_X.X.X_darwin_arm64.tar.gz | tar -xz -C ~/.local/bin
-
-# Linux (x86_64)
-curl -sSL https://github.com/remorses/tuistory/releases/latest/download/tuistory_X.X.X_linux_amd64.tar.gz | tar -xz -C ~/.local/bin
+mkdir -p ~/.local/bin
+curl -fsSL https://github.com/alexgorbatchev/tuistory/releases/download/v0.0.1/tuistory_0.0.1_darwin_arm64.tar.gz | tar -xz -C ~/.local/bin tuistory
 ```
 
 # Quick Start
 
 ```bash
-# Launch a background session (session name auto-derived from cwd and command)
-tuistory -- ./server --port 3000
+# Launch a named background session
+tuistory -s myapp-server --background -- ./server --port 3000
 
 # Wait reactively for the server to be ready
 tuistory -s myapp-server wait "/ready|listening/i" --timeout 30000

@@ -4,7 +4,7 @@ description: Use when launching, inspecting, waiting on, and interacting with ba
 author: alexgorbatchev
 metadata:
   created_on: 2026-04-14 12:00
-  last_modified: 2026-10-02 22:53
+  last_modified: 2026-10-03 09:01
   status: current
 ---
 
@@ -73,9 +73,15 @@ Launch a terminal session in the background daemon with a PTY.
 
 Use `--` to preserve each argument literally, including spaces, dollar signs, and shell metacharacters. Use an explicit shell when shell syntax is needed: `tuistory -- sh -c 'printf ready; exec ./server'`. The positional `launch "command"` form accepts shell source. Restart preserves the original arguments, cwd, dimensions, and environment.
 
+Executable names are resolved using the caller's `PATH`, including overrides supplied with `--env PATH=...`. Relative PATH entries are relative to the child working directory. Concurrent launches for the same session name reuse one live process. Launch and restart reject new sessions while the daemon is shutting down.
+
+PTY dimensions accept columns from 2 through 65535 and rows from 1 through 65535. Launch values of zero select the defaults, 120 columns and 36 rows. Negative or out-of-range dimensions return an error before a child is started.
+
 In a terminal, launch attaches automatically unless `--background` or agent mode is enabled. Inside an existing tuistory session, or when `TRAFORO_URL` or `SIGILLO` is set, launch runs the child in the foreground with the requested cwd and environment.
 
 Without `--no-wait`, launch waits for initial PTY output. A live silent process remains running and produces a timeout warning; a process that exits without output produces an error and remains available for inspection.
+
+A nonpositive launch `--timeout` selects the 5000-millisecond startup wait. Silent-process warnings report the effective wait duration.
 
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -117,14 +123,14 @@ Read process output stream since previous read call (advancing cursor), or read 
 | `--timeout` | | `5000` | Timeout for `--follow` in milliseconds |
 
 ### `tuistory wait <pattern>`
-Poll terminal output until text or regex pattern appears. Returns matching context (up to 10 lines before and after match).
+Poll terminal output until text or regex pattern appears. Return raw-output context up to 10 lines before and after the first matching line; if the raw buffer has no match, return the trimmed terminal text.
 
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `--session` | `-s` | (required) | Target session name |
 | `--timeout` | | `5000` | Maximum wait duration in milliseconds |
 
-*Note: String patterns match literally. Use `/pattern/flags` syntax for regex (e.g. `/[0-9]+/`, `/ready\|listening/i`).*
+String patterns match literally. Use `/pattern/flags` for Go regular expressions, such as `/[0-9]+/` or `/ready|listening/i`. Supported flags are `i` (case-insensitive), `m` (line anchors), `s` (dot matches newlines), and `g` (accepted; searches already start fresh and click finds all matches). Duplicate flags, unsupported flags (including `u` and `y`), and invalid expressions return a regex error immediately. A leading slash without a closing slash remains literal text.
 
 ### `tuistory wait-idle`
 Wait until the process produces no PTY output for ~200ms, indicating rendering has stabilized.
@@ -156,6 +162,8 @@ tuistory -s app press tab
 ### `tuistory click <pattern>`
 Search visible terminal text for a string or `/regex/` pattern and simulate an SGR mouse click at its position.
 
+Use the same regex syntax and flags as `wait`. Click searches each visible terminal line separately, so its regex matches stay within one line.
+
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `--session` | `-s` | (required) | Target session name |
@@ -168,6 +176,8 @@ Send mouse click at 0-based coordinate `(x, y)`: `tuistory -s app click-at 10 5`
 ### `tuistory scroll <direction> [lines]`
 Send mouse wheel scroll events up or down: `tuistory -s app scroll down 5`.
 
+The optional line count is a nonnegative integer, defaulting to 1 only when omitted. An explicit zero sends no input. Negative and noninteger counts return an error before sending input.
+
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `--session` | `-s` | (required) | Target session name |
@@ -179,8 +189,12 @@ Coordinates must be nonnegative and are 0-based. Omitted coordinates select the 
 ### `tuistory resize <cols> <rows>`
 Resize terminal dimensions and send `SIGWINCH` to running process: `tuistory -s app resize 160 50`.
 
+Columns must be 2 through 65535 and rows must be 1 through 65535. Invalid dimensions return an error without changing the PTY, screen, or stored dimensions; zero is invalid for resize.
+
 ### `tuistory screenshot`
 Render terminal buffer to a PNG image file and print output path to stdout.
+
+Relative `--output` paths are resolved in the caller's working directory. The printed path is absolute. Omit `--output` to create a temporary PNG in the daemon's temporary directory.
 
 Include retained scrollback and trim trailing empty rows. Preserve ANSI colors, bold, italic, inverse, faint, underline, and strikethrough, with bundled CJK and Nerd icon fallback fonts. A blank buffer returns `no content to render`. Width crops or extends the canvas without changing terminal cell spacing; pixel ratio scales the rendered image. Reject final canvases, individual font glyph masks, or native geometry cell rasters larger than 67,108,864 pixels before bitmap allocation, including rasters cropped by a smaller canvas. Font drawing positions or translated glyph bounds outside the renderer's native coordinate range also return an error.
 
@@ -202,6 +216,8 @@ Include retained scrollback and trim trailing empty rows. Preserve ANSI colors, 
 Send key(s) and immediately capture rapid text frames as a JSON array to detect layout shifts and transitions:
 `tuistory -s app capture-frames tab --count 5 --interval 20`.
 
+Count must be a positive integer. Interval must be an integer from 0 through 9223372036854 milliseconds, including zero for consecutive snapshots. Invalid values return an error before sending keys. Frames are collected incrementally; closing the session interrupts capture and its interval wait with an error.
+
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `--session`, `-s` | required | Target session name |
@@ -220,14 +236,18 @@ Gracefully restart a session (SIGINT -> SIGTERM if needed) and relaunch with ide
 ### `tuistory close`
 Terminate the PTY process, escalate to process group SIGKILL if necessary, and remove session from daemon.
 
+The command waits for owned process termination and terminal I/O cleanup. SIGTERM is followed by SIGKILL after a two-second grace period when process groups remain alive.
+
 ### `tuistory sessions`
-List active sessions with status, start time, cwd, command, and dimensions. Pass `--json` for machine parseability.
+List sessions with status, start time, cwd, command, and dimensions, sorted newest first. In human mode the listing is formatted with color. In agent mode each session is a compact JSON line with fields `name`, `command`, `cwd`, `cols`, `rows`, `dead`, and `startedAt` (Unix milliseconds). An empty listing prints `No active sessions`. Pass `--json` for an array: compact in agent mode, indented in human mode, and `[]` when empty.
 
 ### `tuistory logfile`
 Print the path to the daemon log file (`/tmp/tuistory/relay-server.log`).
 
 ### `tuistory daemon-stop`
 Stop the background relay server and terminate all associated sessions and child processes.
+
+Shutdown rejects new launch/restart operations and waits for termination, including SIGKILL escalation, before releasing the daemon port and returning `Daemon stopped`.
 
 ### `tuistory attach [-s <name>]`
 Interactive full-screen TUI for humans to view live output and send keystrokes.
@@ -252,5 +272,7 @@ Print only the version string and a newline.
 | `AGENT` | Set to `1`, `true`, or `yes` (case-insensitive) for agent help and to disable auto-attach |
 | `AI_AGENT` | Any nonempty agent name enables agent help and disables auto-attach; an empty value is ignored |
 | `TMPDIR` | Override the temporary directory used for daemon logs, PID/lock files, and default screenshots |
+
+The daemon selects agent output and help from each request's environment. Agent launch/reuse diagnostics and silent-process warnings are compact single lines; changing one caller's agent mode does not change other callers. Terminal device/status query replies are forwarded to the child through its PTY.
 
 The client checks both daemon protocol identity and release version. An incompatible TypeScript daemon is replaced even when its release version is higher. Stop only sessions and daemons you are authorized to stop.
