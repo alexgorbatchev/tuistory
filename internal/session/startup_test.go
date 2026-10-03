@@ -52,9 +52,17 @@ func TestFailedStartReleasesPTYDescriptors(t *testing.T) {
 			t.Fatal("invalid child started")
 		}
 	}
-	before, err := os.ReadDir("/dev/fd")
+	before := descriptorNames(t)
+	probe, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatal(err)
+	}
+	withProbe := descriptorNames(t)
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(withProbe) != len(before)+1 {
+		t.Fatalf("descriptor enumeration missed open file: %d -> %d", len(before), len(withProbe))
 	}
 	for range 50 {
 		for _, opt := range opts {
@@ -63,11 +71,26 @@ func TestFailedStartReleasesPTYDescriptors(t *testing.T) {
 			}
 		}
 	}
-	after, err := os.ReadDir("/dev/fd")
-	if err != nil {
-		t.Fatal(err)
-	}
+	after := descriptorNames(t)
 	if len(after) > len(before) {
 		t.Fatalf("failed starts leaked descriptors: %d -> %d", len(before), len(after))
 	}
+}
+
+func descriptorNames(t *testing.T) []string {
+	t.Helper()
+	dir, err := os.Open("/dev/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Darwin descriptor entries cannot be statted as ordinary directory entries.
+	names, err := dir.Readdirnames(-1)
+	closeErr := dir.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	return names
 }
