@@ -65,6 +65,11 @@ func (l layout) cellRect(x, y, width int) image.Rectangle {
 	return image.Rect(int(math.Round(l.padding+float64(x)*l.cellWidth)), int(math.Round(l.padding+float64(y)*l.cellHeight)), int(math.Round(l.padding+float64(x+width)*l.cellWidth)), int(math.Round(l.padding+float64(y+1)*l.cellHeight)))
 }
 
+func (l layout) contentRect() image.Rectangle {
+	padding := int(math.Round(l.padding))
+	return image.Rect(padding, padding, l.width-padding, l.height-padding)
+}
+
 func colors(cell *xterm.CellData, bg, fg color.RGBA) (color.RGBA, color.RGBA) {
 	cellBg := CellColor(cell.GetBgColor(), cell.IsBgRGB(), cell.IsBgPalette(), bg)
 	cellFg := CellColor(cell.GetFgColor(), cell.IsFgRGB(), cell.IsFgPalette(), fg)
@@ -160,7 +165,7 @@ func RenderTerminal(term *xterm.Terminal, opts Options) ([]byte, error) {
 	}
 	img := image.NewRGBA(image.Rect(0, 0, grid.width, grid.height))
 	draw.Draw(img, img.Bounds(), image.NewUniform(frame), image.Point{}, draw.Src)
-	draw.Draw(img, grid.cellRect(0, 0, term.Cols()).Union(grid.cellRect(0, rows-1, term.Cols())), image.NewUniform(bg), image.Point{}, draw.Src)
+	draw.Draw(img, grid.contentRect(), image.NewUniform(bg), image.Point{}, draw.Src)
 	renderCells(img, term, rows, grid, faces, bg, fg)
 	var out bytes.Buffer
 	if err := png.Encode(&out, img); err != nil {
@@ -170,6 +175,7 @@ func RenderTerminal(term *xterm.Terminal, opts Options) ([]byte, error) {
 }
 
 func renderCells(img *image.RGBA, term *xterm.Terminal, rows int, grid layout, faces fontFaces, bg, fg color.RGBA) {
+	content := img.SubImage(grid.contentRect()).(*image.RGBA)
 	buf := term.Buffer()
 	for y := 0; y < rows; y++ {
 		line := buf.Lines.Get(y)
@@ -181,7 +187,11 @@ func renderCells(img *image.RGBA, term *xterm.Terminal, rows int, grid layout, f
 			if cell.GetWidth() == 0 {
 				continue
 			}
-			rect := grid.cellRect(x, y, max(1, cell.GetWidth())).Intersect(img.Bounds())
+			cellRect := grid.cellRect(x, y, max(1, cell.GetWidth()))
+			rect := cellRect.Intersect(content.Bounds())
+			if rect.Empty() {
+				continue
+			}
 			cellBg, cellFg := colors(cell, bg, fg)
 			if cell.IsDim() != 0 {
 				cellFg = color.RGBA{uint8((uint16(cellFg.R) + uint16(cellBg.R)) / 2), uint8((uint16(cellFg.G) + uint16(cellBg.G)) / 2), uint8((uint16(cellFg.B) + uint16(cellBg.B)) / 2), 255}
@@ -190,11 +200,11 @@ func renderCells(img *image.RGBA, term *xterm.Terminal, rows int, grid layout, f
 			r, _ := utf8.DecodeRuneInString(cell.GetChars())
 			face := faces.selectFace(cell.IsBold() != 0, cell.IsItalic() != 0, r)
 			metrics := face.Metrics()
-			baseline := rect.Min.Y + (rect.Dy()-metrics.Ascent.Ceil()-metrics.Descent.Ceil())/2 + metrics.Ascent.Ceil()
+			baseline := cellRect.Min.Y + (cellRect.Dy()-metrics.Ascent.Ceil()-metrics.Descent.Ceil())/2 + metrics.Ascent.Ceil()
 			if chars := cell.GetChars(); chars != "" && chars != " " {
 				// Clip italic overhang and wide glyphs to their terminal cell span.
-				d := font.Drawer{Dst: img.SubImage(rect).(*image.RGBA), Src: image.NewUniform(cellFg), Face: face, Dot: fixed.P(rect.Min.X, baseline)}
-				if !renderGeometry(img, rect, chars, cellFg) {
+				d := font.Drawer{Dst: content.SubImage(rect).(*image.RGBA), Src: image.NewUniform(cellFg), Face: face, Dot: fixed.P(cellRect.Min.X, baseline)}
+				if !drawGeometry(content, cellRect, rect, chars, cellFg) {
 					d.DrawString(chars)
 				}
 			}
@@ -209,4 +219,19 @@ func renderCells(img *image.RGBA, term *xterm.Terminal, rows int, grid layout, f
 			}
 		}
 	}
+}
+
+func drawGeometry(img *image.RGBA, cellRect, clip image.Rectangle, chars string, fg color.RGBA) bool {
+	if !isGeometry(chars) {
+		return false
+	}
+	if cellRect == clip {
+		return renderGeometry(img, cellRect, chars, fg)
+	}
+	// vector.Draw's fast RGBA path requires the full destination rectangle.
+	// Render at native cell size, then crop with image/draw's clipping semantics.
+	glyph := image.NewRGBA(cellRect)
+	renderGeometry(glyph, cellRect, chars, fg)
+	draw.Draw(img, clip, glyph, clip.Min, draw.Over)
+	return true
 }

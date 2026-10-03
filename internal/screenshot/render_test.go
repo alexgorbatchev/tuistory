@@ -163,6 +163,34 @@ func TestScreenshotLimitIncludesRoundedPixels(t *testing.T) {
 	}
 }
 
+func TestScreenshotExplicitWidthPreservesBackground(t *testing.T) {
+	img := renderImage(t, "M", Options{Width: 240, FontSize: 20, Background: "#000", FrameColor: "#f00", Padding: 2})
+	if got := color.RGBAModel.Convert(img.At(200, 30)).(color.RGBA); got != (color.RGBA{0, 0, 0, 255}) {
+		t.Fatalf("extended content background=%v", got)
+	}
+	if got := color.RGBAModel.Convert(img.At(239, 30)).(color.RGBA); got != (color.RGBA{255, 0, 0, 255}) {
+		t.Fatalf("right frame=%v", got)
+	}
+}
+
+func TestScreenshotExplicitWidthCropsGeometry(t *testing.T) {
+	for _, text := range []string{"", "", "⣿", "▄", "M"} {
+		t.Run(text, func(t *testing.T) {
+			opts := Options{FontSize: 20, Background: "#000", Foreground: "#fff"}
+			full := renderImage(t, text, opts)
+			opts.Width = 4
+			crop := renderImage(t, text, opts)
+			for y := 0; y < crop.Bounds().Dy(); y++ {
+				for x := 0; x < crop.Bounds().Dx(); x++ {
+					if got, want := crop.At(x, y), full.At(x, y); got != want {
+						t.Fatalf("cropped pixel(%d,%d)=%v, want %v", x, y, got, want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestScreenshotWideCellBackground(t *testing.T) {
 	img := renderImage(t, "\x1b[48;2;18;52;86m界\x1b[0mX", Options{})
 	span := int(math.Round(float64(img.Bounds().Dx()) / 10 * 2))

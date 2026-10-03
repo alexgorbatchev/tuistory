@@ -28,6 +28,15 @@ func renderGeometry(img *image.RGBA, rect image.Rectangle, chars string, fg colo
 	return renderPowerline(img, rect, r, fg)
 }
 
+func isGeometry(chars string) bool {
+	if utf8.RuneCountInString(chars) != 1 {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(chars)
+	_, box := boxStrokes[r]
+	return box || (r >= 0x2580 && r <= 0x259f) || (r >= 0x2800 && r <= 0x28ff) || strings.ContainsRune("", r)
+}
+
 func fillRect(img *image.RGBA, rect image.Rectangle, fg color.RGBA) {
 	draw.Draw(img, rect, image.NewUniform(fg), image.Point{}, draw.Over)
 }
@@ -72,17 +81,18 @@ func renderBlock(img *image.RGBA, rect image.Rectangle, r rune, fg color.RGBA) b
 	return true
 }
 
+// Sides are up, right, down, left; 1=light, 2=heavy, 3=double.
+var boxStrokes = map[rune][4]int{
+	'─': {0, 1, 0, 1}, '━': {0, 2, 0, 2}, '│': {1, 0, 1, 0}, '┃': {2, 0, 2, 0},
+	'┌': {0, 1, 1, 0}, '┐': {0, 0, 1, 1}, '└': {1, 1, 0, 0}, '┘': {1, 0, 0, 1},
+	'├': {1, 1, 1, 0}, '┤': {1, 0, 1, 1}, '┬': {0, 1, 1, 1}, '┴': {1, 1, 0, 1}, '┼': {1, 1, 1, 1},
+	'╴': {0, 0, 0, 1}, '╵': {1, 0, 0, 0}, '╶': {0, 1, 0, 0}, '╷': {0, 0, 1, 0},
+	'╸': {0, 0, 0, 2}, '╹': {2, 0, 0, 0}, '╺': {0, 2, 0, 0}, '╻': {0, 0, 2, 0},
+	'═': {0, 3, 0, 3}, '║': {3, 0, 3, 0}, '╔': {0, 3, 3, 0}, '╗': {0, 0, 3, 3}, '╚': {3, 3, 0, 0}, '╝': {3, 0, 0, 3}, '╬': {3, 3, 3, 3},
+}
+
 func renderBox(img *image.RGBA, rect image.Rectangle, r rune, fg color.RGBA) bool {
-	// Sides are up, right, down, left; 1=light, 2=heavy, 3=double.
-	sides := map[rune][4]int{
-		'─': {0, 1, 0, 1}, '━': {0, 2, 0, 2}, '│': {1, 0, 1, 0}, '┃': {2, 0, 2, 0},
-		'┌': {0, 1, 1, 0}, '┐': {0, 0, 1, 1}, '└': {1, 1, 0, 0}, '┘': {1, 0, 0, 1},
-		'├': {1, 1, 1, 0}, '┤': {1, 0, 1, 1}, '┬': {0, 1, 1, 1}, '┴': {1, 1, 0, 1}, '┼': {1, 1, 1, 1},
-		'╴': {0, 0, 0, 1}, '╵': {1, 0, 0, 0}, '╶': {0, 1, 0, 0}, '╷': {0, 0, 1, 0},
-		'╸': {0, 0, 0, 2}, '╹': {2, 0, 0, 0}, '╺': {0, 2, 0, 0}, '╻': {0, 0, 2, 0},
-		'═': {0, 3, 0, 3}, '║': {3, 0, 3, 0}, '╔': {0, 3, 3, 0}, '╗': {0, 0, 3, 3}, '╚': {3, 3, 0, 0}, '╝': {3, 0, 0, 3}, '╬': {3, 3, 3, 3},
-	}
-	strokes, ok := sides[r]
+	strokes, ok := boxStrokes[r]
 	if !ok {
 		return false
 	}
