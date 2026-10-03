@@ -182,13 +182,17 @@ func New(opts LaunchOptions) (*Session, error) {
 		xterm.WithScrollback(1000),
 	)
 
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
-		Rows: uint16(rows),
-		Cols: uint16(cols),
-	})
+	ptmx, tty, err := pty.Open()
 	if err != nil {
-		return nil, fmt.Errorf("starting pty: %w", err)
+		return nil, fmt.Errorf("opening pty: %w", err)
 	}
+	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}); err != nil {
+		_ = tty.Close() // Best-effort cleanup after setup failure.
+		_ = ptmx.Close()
+		return nil, fmt.Errorf("sizing pty: %w", err)
+	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 
 	s := &Session{
 		ptmx:             ptmx,
@@ -209,7 +213,16 @@ func New(opts LaunchOptions) (*Session, error) {
 		termcastDbSuffix: generatedTermcastSuffix,
 	}
 
+	// Darwin drains and then flushes unread output when the slave closes. The
+	// master must already have a reader before starting a short-lived child.
 	go s.readLoop()
+	if err := cmd.Start(); err != nil {
+		_ = tty.Close() // Closing the slave releases the reader on failed startup.
+		_ = ptmx.Close()
+		<-s.readDone
+		return nil, fmt.Errorf("starting pty: %w", err)
+	}
+	_ = tty.Close() // Child owns its inherited slave descriptors.
 	go s.waitLoop()
 
 	return s, nil
