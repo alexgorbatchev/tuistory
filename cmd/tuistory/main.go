@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -88,11 +89,26 @@ func runRelayServer(port int) {
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+	serveDone := make(chan struct{})
+	shutdownDone := make(chan struct{})
 
 	go func() {
-		sig := <-sigChan
-		logger.Info("Shutting down relay server", "signal", sig.String())
-		srv.Sessions().CloseAll("daemon-shutdown")
+		defer close(shutdownDone)
+		select {
+		case sig := <-sigChan:
+			logger.Info("Shutting down relay server", "signal", sig.String())
+		case <-serveDone:
+			logger.Info("Cleaning up relay sessions after server exit")
+		}
+		// Keep ownership of the port until cleanup finishes: daemon-stop waits
+		// for the port to become free. Shutdown rejects new session operations.
+		if err := srv.Sessions().Shutdown(context.Background(), "daemon-shutdown"); err != nil {
+			logger.Error("Closing relay sessions", "error", err)
+		}
+		if err := httpServer.Close(); err != nil {
+			logger.Error("Closing relay server", "error", err)
+		}
 
 		// Remove PID file if still owned
 		data, err := os.ReadFile(pidFile)
@@ -100,11 +116,12 @@ func runRelayServer(port int) {
 			_ = os.Remove(pidFile)
 		}
 
-		_ = httpServer.Close()
-		os.Exit(0)
 	}()
 
-	if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	err = httpServer.Serve(listener)
+	close(serveDone)
+	<-shutdownDone
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("Server error", "error", err)
 		os.Exit(1)
 	}
