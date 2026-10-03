@@ -12,16 +12,28 @@ import (
 
 var errCaptureClosed = errors.New("cannot captureFrames: session is closed")
 
+func (s *Session) checkWritable(operation string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.writableErrorLocked(operation)
+}
+
+func (s *Session) writableErrorLocked(operation string) error {
+	if s.closed {
+		return fmt.Errorf("cannot %s: session is closed", operation)
+	}
+	if s.isDead {
+		return fmt.Errorf("cannot %s: PTY process has exited", operation)
+	}
+	return nil
+}
+
 // WriteRaw writes raw bytes directly to the PTY.
 func (s *Session) WriteRaw(data string) error {
 	s.mu.RLock()
-	if s.closed {
+	if err := s.writableErrorLocked("writeRaw"); err != nil {
 		s.mu.RUnlock()
-		return errors.New("cannot writeRaw: session is closed")
-	}
-	if s.isDead {
-		s.mu.RUnlock()
-		return errors.New("cannot writeRaw: PTY process has exited")
+		return err
 	}
 	ptmx := s.ptmx
 	s.mu.RUnlock()
@@ -32,6 +44,9 @@ func (s *Session) WriteRaw(data string) error {
 
 // Type sends text character by character with 1ms delay.
 func (s *Session) Type(text string) error {
+	if err := s.checkWritable("type"); err != nil {
+		return err
+	}
 	for _, ch := range text {
 		if err := s.WriteRaw(string(ch)); err != nil {
 			return err
@@ -61,7 +76,10 @@ func (s *Session) Resize(cols, rows int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.ptmx != nil && !s.closed && !s.isDead {
+	if err := s.writableErrorLocked("resize"); err != nil {
+		return err
+	}
+	if s.ptmx != nil {
 		if err := pty.Setsize(s.ptmx, &pty.Winsize{
 			Rows: uint16(rows),
 			Cols: uint16(cols),
@@ -209,6 +227,9 @@ func (s *Session) CaptureFrames(keyTokens []string, count int, interval time.Dur
 	}
 	if interval < 0 {
 		return nil, fmt.Errorf("interval must be nonnegative, got %v", interval)
+	}
+	if err := s.checkWritable("captureFrames"); err != nil {
+		return nil, err
 	}
 	closing := make(chan struct{})
 	unsubscribe := s.OnClosing(func(string) { close(closing) })

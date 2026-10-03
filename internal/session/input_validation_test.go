@@ -254,6 +254,60 @@ func TestResizePTYFailurePreservesTerminalState(t *testing.T) {
 	}
 }
 
+func TestInputRejectsStoppedSessionWithoutMutation(t *testing.T) {
+	for _, state := range []string{"closed", "exited"} {
+		t.Run(state, func(t *testing.T) {
+			s := launchTestSession(t, LaunchOptions{Command: "sh", Args: []string{"-c", "printf ready; exit 7"}, Cols: 40, Rows: 3})
+			if !s.WaitForExit(time.Second) {
+				t.Fatal("child did not exit")
+			}
+			if err := s.WaitForData(time.Second); err != nil {
+				t.Fatal(err)
+			}
+			want := "PTY process has exited"
+			if state == "closed" {
+				s.Close("test")
+				want = "session is closed"
+			}
+			before, err := s.Text(TextOptions{Immediate: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, op := range []struct {
+				name string
+				run  func() error
+			}{
+				{"resize", func() error { return s.Resize(80, 6) }},
+				{"empty type", func() error { return s.Type("") }},
+				{"modifier capture", func() error {
+					frames, err := s.CaptureFrames([]string{"ctrl"}, 1, 0)
+					if frames != nil {
+						t.Errorf("stopped capture returned frames: %q", frames)
+					}
+					return err
+				}},
+			} {
+				t.Run(op.name, func(t *testing.T) {
+					if err := op.run(); err == nil || !strings.Contains(err.Error(), want) {
+						t.Errorf("%s = %v, want %q", op.name, err, want)
+					}
+				})
+			}
+			s.mu.RLock()
+			cols, rows := s.cols, s.rows
+			termCols, termRows := s.term.Cols(), s.term.Rows()
+			s.mu.RUnlock()
+			if cols != 40 || rows != 3 || termCols != 40 || termRows != 3 {
+				t.Errorf("stopped resize changed dimensions: stored %dx%d, emulator %dx%d", cols, rows, termCols, termRows)
+			}
+			after, err := s.Text(TextOptions{Immediate: true})
+			if err != nil || after != before {
+				t.Errorf("stopped resize changed screen: %q -> %q, error %v", before, after, err)
+			}
+		})
+	}
+}
+
 func inputEchoSession(t *testing.T) *Session {
 	t.Helper()
 	s := launchTestSession(t, LaunchOptions{Command: "sh", Args: []string{"-c", "stty raw -echo; printf ready; cat"}, Cols: 40, Rows: 3, IdleDelay: time.Millisecond})

@@ -290,8 +290,8 @@ func TestSessionMetadataAndLifecycle(t *testing.T) {
 	if _, err := s.CaptureFrames([]string{"enter"}, 1, time.Millisecond); err == nil {
 		t.Fatal("capture write to closed process succeeded")
 	}
-	if err := s.Resize(25, 3); err != nil {
-		t.Fatal(err)
+	if err := s.Resize(25, 3); err == nil {
+		t.Fatal("resize of closed process succeeded")
 	}
 }
 

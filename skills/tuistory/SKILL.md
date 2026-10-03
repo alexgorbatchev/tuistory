@@ -4,7 +4,7 @@ description: Use when launching, inspecting, waiting on, and interacting with ba
 author: alexgorbatchev
 metadata:
   created_on: 2026-04-14 12:00
-  last_modified: 2026-10-03 09:01
+  last_modified: 2026-10-03 11:40
   status: current
 ---
 
@@ -143,6 +143,8 @@ Wait until the process produces no PTY output for ~200ms, indicating rendering h
 ### `tuistory type <text>`
 Type text character by character with 1ms delay between strokes to trigger autocomplete and search handlers.
 
+Closed sessions and exited processes return an error, including when text is empty.
+
 ### `tuistory press <key> [...keys]`
 Send a key or key combination (chord) to the terminal.
 
@@ -191,6 +193,8 @@ Resize terminal dimensions and send `SIGWINCH` to running process: `tuistory -s 
 
 Columns must be 2 through 65535 and rows must be 1 through 65535. Invalid dimensions return an error without changing the PTY, screen, or stored dimensions; zero is invalid for resize.
 
+Closed sessions and exited processes return an error without changing the screen or stored dimensions.
+
 ### `tuistory screenshot`
 Render terminal buffer to a PNG image file and print output path to stdout.
 
@@ -217,6 +221,8 @@ Send key(s) and immediately capture rapid text frames as a JSON array to detect 
 `tuistory -s app capture-frames tab --count 5 --interval 20`.
 
 Count must be a positive integer. Interval must be an integer from 0 through 9223372036854 milliseconds, including zero for consecutive snapshots. Invalid values return an error before sending keys. Frames are collected incrementally; closing the session interrupts capture and its interval wait with an error.
+
+Closed sessions and exited processes return an error before capture, including when the key list contains only modifiers.
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
