@@ -92,6 +92,13 @@ type Session struct {
 	readFinished bool
 	readDone     chan struct{}
 	processDone  chan struct{}
+	closeDone    chan struct{}
+
+	terminalReplies    []string
+	terminalReplySub   xterm.Disposable
+	terminalReplyQueue chan string
+	terminalReplyStop  chan struct{}
+	terminalReplyDone  chan struct{}
 
 	hasReceivedData bool
 	dataWaiters     []chan struct{}
@@ -187,7 +194,7 @@ func New(opts LaunchOptions) (*Session, error) {
 		xterm.WithScrollback(1000),
 	)
 
-	ptmx, tty, err := pty.Open()
+	ptmx, tty, err := openPTY()
 	if err != nil {
 		return nil, fmt.Errorf("opening pty: %w", err)
 	}
@@ -200,31 +207,37 @@ func New(opts LaunchOptions) (*Session, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 
 	s := &Session{
-		ptmx:             ptmx,
-		cmd:              cmd,
-		term:             term,
-		cols:             cols,
-		rows:             rows,
-		cwd:              targetCwd,
-		command:          label,
-		env:              envMap,
-		idleDelay:        idleDelay,
-		showCursor:       opts.ShowCursor,
-		startedAt:        time.Now(),
-		outputChanged:    make(chan struct{}),
-		readDone:         make(chan struct{}),
-		processDone:      make(chan struct{}),
-		subscribers:      make(map[int]*subscription),
-		termcastDbSuffix: generatedTermcastSuffix,
+		ptmx:               ptmx,
+		cmd:                cmd,
+		term:               term,
+		cols:               cols,
+		rows:               rows,
+		cwd:                targetCwd,
+		command:            label,
+		env:                envMap,
+		idleDelay:          idleDelay,
+		showCursor:         opts.ShowCursor,
+		startedAt:          time.Now(),
+		outputChanged:      make(chan struct{}),
+		readDone:           make(chan struct{}),
+		processDone:        make(chan struct{}),
+		closeDone:          make(chan struct{}),
+		terminalReplyQueue: make(chan string, terminalReplyCapacity),
+		terminalReplyStop:  make(chan struct{}),
+		terminalReplyDone:  make(chan struct{}),
+		subscribers:        make(map[int]*subscription),
+		termcastDbSuffix:   generatedTermcastSuffix,
 	}
 
 	// Darwin drains and then flushes unread output when the slave closes. The
 	// master must already have a reader before starting a short-lived child.
+	s.startTerminalReplies()
 	go s.readLoop()
 	if err := cmd.Start(); err != nil {
 		_ = tty.Close() // Closing the slave releases the reader on failed startup.
 		_ = ptmx.Close()
 		<-s.readDone
+		<-s.terminalReplyDone
 		return nil, fmt.Errorf("starting pty: %w", err)
 	}
 	_ = tty.Close() // Child owns its inherited slave descriptors.
@@ -238,6 +251,8 @@ func (s *Session) readLoop() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.readFinished = true
+		s.terminalReplySub.Dispose()
+		close(s.terminalReplyQueue)
 		close(s.readDone)
 		close(s.outputChanged)
 		s.outputChanged = make(chan struct{})
@@ -252,9 +267,12 @@ func (s *Session) readLoop() {
 		if n > 0 {
 			chunk := string(buf[:n])
 			var subscribers []*subscription
+			var replies []string
 			s.mu.Lock()
 			if !s.closed {
 				_, _ = s.term.Write(buf[:n])
+				replies = s.terminalReplies
+				s.terminalReplies = nil
 
 				s.outputChunks = append(s.outputChunks, chunk)
 				close(s.outputChanged)
@@ -300,6 +318,9 @@ func (s *Session) readLoop() {
 				})
 			}
 			s.mu.Unlock()
+			if !s.sendTerminalReplies(replies) {
+				return
+			}
 			for _, sub := range subscribers {
 				select {
 				case <-sub.done:

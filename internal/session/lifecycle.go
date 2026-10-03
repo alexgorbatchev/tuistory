@@ -2,8 +2,6 @@ package session
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -146,7 +144,8 @@ func (s *Session) WaitForExit(timeout time.Duration) bool {
 	return false
 }
 
-// Close terminates the PTY session and kills its process group.
+// Close stops terminal I/O and starts termination of the session process groups.
+// CloseAndWait joins termination when the caller must wait for cleanup.
 func (s *Session) Close(reason string) {
 	s.mu.Lock()
 	if s.closed {
@@ -154,6 +153,7 @@ func (s *Session) Close(reason string) {
 		return
 	}
 	s.closed = true
+	close(s.terminalReplyStop)
 	s.closeReason = reason
 	close(s.outputChanged)
 	s.outputChanged = make(chan struct{})
@@ -185,26 +185,13 @@ func (s *Session) Close(reason string) {
 	termcastSuffix := s.termcastDbSuffix
 	cwd := s.cwd
 	s.mu.Unlock()
-	for _, fn := range listeners {
-		fn.callback(reason)
-	}
 
 	if ptmx != nil {
-		_ = ptmx.Close()
+		_ = ptmx.Close() // Closing cancels pending PTY I/O before joining it.
 	}
+	go s.finishClose(cmd, termcastSuffix, cwd)
 
-	if cmd != nil && cmd.Process != nil {
-		pid := cmd.Process.Pid
-		process.KillSessionGroups(pid, unix.SIGTERM)
-		time.AfterFunc(killGraceDuration, func() {
-			process.KillSessionGroups(pid, unix.SIGKILL)
-		})
-	}
-
-	if termcastSuffix != "" {
-		bundleDir := filepath.Join(cwd, ".termcast-bundle")
-		_ = os.Remove(filepath.Join(bundleDir, "data-"+termcastSuffix+".db"))
-		_ = os.Remove(filepath.Join(bundleDir, "data-"+termcastSuffix+".db-shm"))
-		_ = os.Remove(filepath.Join(bundleDir, "data-"+termcastSuffix+".db-wal"))
+	for _, fn := range listeners {
+		fn.callback(reason)
 	}
 }
