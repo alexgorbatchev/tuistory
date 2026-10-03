@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/remorses/tuistory/internal/relay"
 )
@@ -93,5 +94,21 @@ func TestAgentSilentLaunchDiagnosticIsCompact(t *testing.T) {
 	res := ExecuteCommand([]string{"-s", "silent-agent", "--timeout", "1", "--", "cat"}, reg, t.TempDir(), map[string]string{"AGENT": "yes"})
 	if res.ExitCode != 0 || res.Stderr == "" || strings.Contains(res.Stderr, "\n") || strings.Contains(res.Stderr, "  ") {
 		t.Fatalf("silent agent launch diagnostic: %+v", res)
+	}
+}
+
+func TestLaunchWarningReportsEffectiveTimeout(t *testing.T) {
+	for _, timeout := range []string{"0", "-1"} {
+		t.Run(timeout, func(t *testing.T) {
+			t.Parallel()
+			reg := relay.NewSessionRegistry()
+			t.Cleanup(func() { reg.CloseAll("test") })
+			start := time.Now()
+			res := ExecuteCommand([]string{"-s", "silent-default", "--timeout", timeout, "--", "cat"}, reg, t.TempDir(), map[string]string{"AGENT": "1"})
+			t.Logf("launch timeout %s waited %s", timeout, time.Since(start))
+			if res.ExitCode != 0 || !strings.Contains(res.Stderr, "no output within 5000ms") {
+				t.Fatalf("effective timeout diagnostic: %+v", res)
+			}
+		})
 	}
 }

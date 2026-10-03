@@ -132,7 +132,7 @@ func (o *launchOptions) waitForLaunch(c *commandContext, s *session.Session, nam
 		if s.IsDead() {
 			return fmt.Errorf("Failed to launch session %q: %w", name, err)
 		}
-		c.warnSilentSession(name, "started", o.timeout)
+		c.warnSilentSession(name, "started", int(wait.Milliseconds()))
 	}
 	return nil
 }
