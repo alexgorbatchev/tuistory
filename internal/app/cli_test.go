@@ -173,7 +173,7 @@ func TestCommandLaunchVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
-		{"-s", "live", "--cwd", "child", "--env", "VALUE=a,b", "--background", "--no-wait", "--", "cat"},
+		{"-s", "live", "--cwd", "child", "--env", "VALUE=a,b", "--background", "--no-wait", "--", "sh", "-c", "printf ready; exec cat"},
 		{"launch", "cat", "-s", "live", "--background"},
 		{"launch", "cat", "-s", "live"},
 	} {
@@ -183,6 +183,9 @@ func TestCommandLaunchVariants(t *testing.T) {
 		}
 	}
 	s := reg.Get("live")
+	if err := s.WaitForData(time.Second); err != nil {
+		t.Fatal(err)
+	}
 	if s.Cwd() != filepath.Join(cwd, "child") || s.Env()["VALUE"] != "a,b" || s.Env()["BASE"] != "kept" {
 		t.Fatalf("launch context lost: %s %v", s.Cwd(), s.Env())
 	}
