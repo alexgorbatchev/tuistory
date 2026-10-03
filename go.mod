@@ -1,6 +1,6 @@
 module github.com/remorses/tuistory
 
-go 1.26.2
+go 1.26.8
 
 require (
 	github.com/alexgorbatchev/cobra-help-tree/v2 v2.0.1

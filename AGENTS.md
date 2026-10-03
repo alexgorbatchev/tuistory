@@ -1,12 +1,12 @@
 ---
 created_on: 2026-10-02 06:50
-last_modified: 2026-10-02 22:26
+last_modified: 2026-10-02 22:46
 status: current
 ---
 
 # tuistory Developer & Agent Instructions
 
-This project is written in Go and uses `just` for task automation and Cobra with `cobra-help-tree/v2` for CLI commands.
+This project requires Go 1.26.8 or newer and uses `just` for task automation and Cobra with `cobra-help-tree/v2` for CLI commands. The Go 1.26 patch requirement includes the upstream Darwin race-detector fork fix ([Go issue 79806](https://github.com/golang/go/issues/79806)); keep CI's toolchain selection grounded in `go.mod`.
 
 ## Core Commands
 

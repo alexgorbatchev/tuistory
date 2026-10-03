@@ -15,8 +15,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-go@v7
         with:
@@ -33,16 +31,3 @@ jobs:
 
       - name: Test
         run: bash scripts/coverage.sh
-
-      - name: Verify Darwin regression rejects the previous startup implementation
-        if: runner.os == 'macOS'
-        run: |
-          cp internal/session/session.go .tmp/startup-current.go
-          trap 'cp .tmp/startup-current.go internal/session/session.go' EXIT
-          git show f5cf52e5ff86b95ef5cd521699187b58b6e2d632:internal/session/session.go > internal/session/session.go
-          if go test -race ./internal/session -run '^TestDirectChildOutputSurvivesImmediateExit$' -count=3 > .tmp/startup-disabled-red.log 2>&1; then
-            cat .tmp/startup-disabled-red.log
-            exit 1
-          fi
-          cat .tmp/startup-disabled-red.log
-          rg 'child [0-9]+ output lost' .tmp/startup-disabled-red.log
