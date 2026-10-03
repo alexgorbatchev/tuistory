@@ -134,12 +134,15 @@ type closeListener struct {
 // New creates and starts a new PTY session.
 func New(opts LaunchOptions) (*Session, error) {
 	cols := opts.Cols
-	if cols <= 0 {
+	if cols == 0 {
 		cols = defaultCols
 	}
 	rows := opts.Rows
-	if rows <= 0 {
+	if rows == 0 {
 		rows = defaultRows
+	}
+	if err := validateDimensions(cols, rows); err != nil {
+		return nil, err
 	}
 
 	idleDelay := opts.IdleDelay
