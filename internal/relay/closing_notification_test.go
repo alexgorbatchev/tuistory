@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ import (
 
 func TestClosingSessionDoesNotForwardExitBeforeClosing(t *testing.T) {
 	srv := NewServer("test", 19999, ".")
-	s := relaySession(t, "printf ready; exec cat")
+	s := relaySession(t, "stty raw -echo; printf ready; exec cat")
 	closing := make(chan struct{})
 	resume := make(chan struct{})
 	var resumed sync.Once
@@ -33,6 +34,23 @@ func TestClosingSessionDoesNotForwardExitBeforeClosing(t *testing.T) {
 	writeControl(t, ctx, conn, map[string]any{"type": "attach", "session": "closing"})
 	if _, _, err := conn.Read(ctx); err != nil {
 		t.Fatal(err)
+	}
+	// History replay precedes lifecycle registration; a PTY round trip confirms
+	// that the handler has finished attach setup and reached its next read.
+	const readiness = "attach-lifecycle-ready"
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte(readiness)); err != nil {
+		t.Fatal(err)
+	}
+	var echoed strings.Builder
+	for !strings.Contains(echoed.String(), readiness) {
+		typ, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ != websocket.MessageBinary {
+			t.Fatalf("attach readiness expected PTY data, got %s", data)
+		}
+		echoed.Write(data)
 	}
 	closed := make(chan struct{})
 	go func() { s.Close("ordered-closing"); close(closed) }()
