@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/remorses/tuistory/internal/session"
 )
 
 func shellQuote(s string) string {
@@ -58,8 +60,8 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
-func (c *commandContext) printSessionDiagnostic(name, action, command, cwd string, cols, rows int) {
-	fmt.Fprintf(c.stdout, "Session %q %s command:%q cwd:%q cols:%d rows:%d", name, action, command, cwd, cols, rows)
+func (c *commandContext) printSessionDiagnostic(s *session.Session, name, action string) {
+	fmt.Fprintf(c.stdout, "Session %q %s command:%q cwd:%q cols:%d rows:%d", name, action, s.Command(), s.Cwd(), s.Cols(), s.Rows())
 }
 
 func (c *commandContext) warnSilentSession(name, action string, timeout int) {

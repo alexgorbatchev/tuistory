@@ -119,7 +119,7 @@ func (o *launchOptions) run(c *commandContext, cmd *cobra.Command, args []string
 			return err
 		}
 	}
-	o.printStarted(c, opts, name)
+	o.printStarted(c, s, name)
 	return nil
 }
 
@@ -139,7 +139,7 @@ func (o *launchOptions) waitForLaunch(c *commandContext, s *session.Session, nam
 
 func (o *launchOptions) printExisting(c *commandContext, s *session.Session, name string) {
 	if c.agent {
-		c.printSessionDiagnostic(name, "already running", s.Command(), s.Cwd(), s.Cols(), s.Rows())
+		c.printSessionDiagnostic(s, name, "already running")
 		return
 	}
 	if !o.background {
@@ -152,9 +152,9 @@ func (o *launchOptions) printExisting(c *commandContext, s *session.Session, nam
 	c.printInteractionCommands(name, false)
 }
 
-func (o *launchOptions) printStarted(c *commandContext, opts session.LaunchOptions, name string) {
+func (o *launchOptions) printStarted(c *commandContext, s *session.Session, name string) {
 	if c.agent {
-		c.printSessionDiagnostic(name, "started", opts.Label, opts.Cwd, opts.Cols, opts.Rows)
+		c.printSessionDiagnostic(s, name, "started")
 		return
 	}
 	if !o.background {
@@ -162,7 +162,7 @@ func (o *launchOptions) printStarted(c *commandContext, opts session.LaunchOptio
 		return
 	}
 	fmt.Fprintf(c.stdout, "Session %q is now running in the background.\n\n", name)
-	fmt.Fprintf(c.stdout, "  command: %s\n  cwd:     %s\n  cols:    %d\n  rows:    %d\n\n", opts.Label, opts.Cwd, opts.Cols, opts.Rows)
+	fmt.Fprintf(c.stdout, "  command: %s\n  cwd:     %s\n  cols:    %d\n  rows:    %d\n\n", s.Command(), s.Cwd(), s.Cols(), s.Rows())
 	fmt.Fprint(c.stdout, "The process is alive but you are not attached to it.\nUse these commands to interact with the session:\n\n")
 	c.printInteractionCommands(name, true)
 }
