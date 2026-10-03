@@ -102,7 +102,7 @@ type Session struct {
 	outputReadIndex int
 	outputChanged   chan struct{}
 
-	subscribers      map[int]chan string
+	subscribers      map[int]*subscription
 	nextSubscriberID int
 
 	exitListeners  []exitListener
@@ -203,7 +203,7 @@ func New(opts LaunchOptions) (*Session, error) {
 		outputChanged:    make(chan struct{}),
 		readDone:         make(chan struct{}),
 		processDone:      make(chan struct{}),
-		subscribers:      make(map[int]chan string),
+		subscribers:      make(map[int]*subscription),
 		termcastDbSuffix: generatedTermcastSuffix,
 	}
 
@@ -231,6 +231,7 @@ func (s *Session) readLoop() {
 		n, err := s.ptmx.Read(buf)
 		if n > 0 {
 			chunk := string(buf[:n])
+			var subscribers []*subscription
 			s.mu.Lock()
 			if !s.closed {
 				_, _ = s.term.Write(buf[:n])
@@ -249,10 +250,7 @@ func (s *Session) readLoop() {
 				}
 
 				for _, sub := range s.subscribers {
-					select {
-					case sub <- chunk:
-					default:
-					}
+					subscribers = append(subscribers, sub)
 				}
 
 				if !s.hasReceivedData {
@@ -282,6 +280,12 @@ func (s *Session) readLoop() {
 				})
 			}
 			s.mu.Unlock()
+			for _, sub := range subscribers {
+				select {
+				case <-sub.done:
+				case sub.chunks <- chunk:
+				}
+			}
 		}
 
 		if err != nil {

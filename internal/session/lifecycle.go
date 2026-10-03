@@ -5,46 +5,80 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/remorses/tuistory/internal/process"
 	"golang.org/x/sys/unix"
 )
 
-// Subscribe registers a listener for raw PTY data chunks and returns an unsubscribe func.
+const subscriptionCapacity = 128
+
+type subscription struct {
+	chunks chan string
+	done   <-chan struct{}
+	cancel context.CancelFunc
+}
+
+// Subscribe registers a live-only listener for raw PTY data chunks. Callbacks
+// run outside the session lock and must return to allow delivery to continue.
 func (s *Session) Subscribe(cb func(string)) func() {
+	return s.subscribe(false, func(_ context.Context, data string) { cb(data) })
+}
+
+// SubscribeWithBuffer atomically registers a listener and delivers buffered
+// output before live chunks. Closing cancels even an in-flight history callback.
+func (s *Session) SubscribeWithBuffer(cb func(context.Context, string)) func() {
+	return s.subscribe(true, cb)
+}
+
+func (s *Session) subscribe(replay bool, cb func(context.Context, string)) func() {
+	ctx, cancel := context.WithCancel(context.Background())
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.closed {
+		s.mu.Unlock()
+		cancel()
+		return func() {}
+	}
 
 	id := s.nextSubscriberID
 	s.nextSubscriberID++
-	ch := make(chan string, 128)
-	s.subscribers[id] = ch
+	sub := &subscription{chunks: make(chan string, subscriptionCapacity), done: ctx.Done(), cancel: cancel}
+	history := ""
+	if replay {
+		history = strings.Join(s.outputChunks, "")
+	}
+	s.subscribers[id] = sub
+	s.mu.Unlock()
+	unsubscribe := func() {
+		cancel()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.subscribers, id)
+	}
+	if history != "" {
+		cb(ctx, history)
+	}
+	if ctx.Err() != nil {
+		unsubscribe()
+		return unsubscribe
+	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case data, ok := <-ch:
-				if !ok {
+			case data := <-sub.chunks:
+				if ctx.Err() != nil {
 					return
 				}
-				cb(data)
+				cb(ctx, data)
 			}
 		}
 	}()
 
-	return func() {
-		cancel()
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if current, ok := s.subscribers[id]; ok {
-			delete(s.subscribers, id)
-			close(current)
-		}
-	}
+	return unsubscribe
 }
 
 // KillProcess sends SIGTERM to the session process groups.
@@ -128,9 +162,9 @@ func (s *Session) Close(reason string) {
 	s.closeListeners = nil
 
 	for _, sub := range s.subscribers {
-		close(sub)
+		sub.cancel()
 	}
-	s.subscribers = make(map[int]chan string)
+	s.subscribers = make(map[int]*subscription)
 
 	if s.idleTimer != nil {
 		s.idleTimer.Stop()
