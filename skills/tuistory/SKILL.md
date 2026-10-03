@@ -4,7 +4,7 @@ description: Use when launching, inspecting, waiting on, and interacting with ba
 author: alexgorbatchev
 metadata:
   created_on: 2026-04-14 12:00
-  last_modified: 2026-10-02 22:26
+  last_modified: 2026-10-02 22:43
   status: current
 ---
 
@@ -182,7 +182,7 @@ Resize terminal dimensions and send `SIGWINCH` to running process: `tuistory -s 
 ### `tuistory screenshot`
 Render terminal buffer to a PNG image file and print output path to stdout.
 
-Include retained scrollback and trim trailing empty rows. Preserve ANSI colors, bold, italic, inverse, faint, underline, and strikethrough, with bundled CJK and Nerd icon fallback fonts. A blank buffer returns `no content to render`. Width crops or extends the canvas without changing terminal cell spacing; pixel ratio scales the rendered image. Reject images larger than 67,108,864 pixels before allocation.
+Include retained scrollback and trim trailing empty rows. Preserve ANSI colors, bold, italic, inverse, faint, underline, and strikethrough, with bundled CJK and Nerd icon fallback fonts. A blank buffer returns `no content to render`. Width crops or extends the canvas without changing terminal cell spacing; pixel ratio scales the rendered image. Reject final canvases, individual font glyph masks, or native geometry cell rasters larger than 67,108,864 pixels before bitmap allocation, including rasters cropped by a smaller canvas.
 
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
