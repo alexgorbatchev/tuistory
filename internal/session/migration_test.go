@@ -300,6 +300,23 @@ func TestCloseEscalatesForSignalIgnoringProcess(t *testing.T) {
 	}
 }
 
+func TestExitMetadataCannotMutateSession(t *testing.T) {
+	s := launchTestSession(t, LaunchOptions{Command: "sh", Args: []string{"-c", "exit 7"}})
+	if !s.WaitForExit(time.Second) {
+		t.Fatal("child did not exit")
+	}
+	info := s.ExitInfo()
+	exited := s.ExitedAt()
+	if info == nil || exited == nil {
+		t.Fatal("missing exit metadata")
+	}
+	info.ExitCode = 99
+	*exited = time.Time{}
+	if s.ExitInfo().ExitCode != 7 || s.ExitedAt().IsZero() {
+		t.Fatal("caller mutated internal exit metadata")
+	}
+}
+
 func TestMouseAndFrameCapture(t *testing.T) {
 	s := launchTestSession(t, LaunchOptions{Command: "sh", Args: []string{"-c", "stty raw -echo; printf 'target target'; cat"}, Cols: 40, Rows: 4, IdleDelay: 10 * time.Millisecond})
 	if _, err := s.WaitForText("target", time.Second); err != nil {

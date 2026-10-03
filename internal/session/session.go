@@ -351,7 +351,11 @@ func (s *Session) IsDead() bool {
 func (s *Session) ExitInfo() *ExitInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.exitInfo
+	if s.exitInfo == nil {
+		return nil
+	}
+	info := *s.exitInfo
+	return &info
 }
 
 // Cols returns the current terminal column width.
@@ -404,7 +408,11 @@ func (s *Session) StartedAt() time.Time {
 func (s *Session) ExitedAt() *time.Time {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.exitedAt
+	if s.exitedAt == nil {
+		return nil
+	}
+	exited := *s.exitedAt
+	return &exited
 }
 
 // WaitForData blocks until the first byte arrives or timeout occurs.
