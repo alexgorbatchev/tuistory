@@ -101,26 +101,19 @@ func (o *launchOptions) run(c *commandContext, cmd *cobra.Command, args []string
 	}
 	name, cwd := o.target(c, label)
 	c.registry.EvictStaleDead()
-	existing := c.registry.Get(name)
-	if existing != nil && existing.IsDead() {
-		existing.Close("relaunch")
-		c.registry.Delete(name)
-		existing = nil
-	}
-	if existing != nil {
-		o.printExisting(c, existing, name)
-		return nil
-	}
 	opts := session.LaunchOptions{
 		Command: program, Args: argv, Label: label,
 		Cols: o.cols, Rows: o.rows, Cwd: cwd,
 		Env: o.environment(c, name), IdleDelay: 200 * time.Millisecond,
 	}
-	s, err := session.New(opts)
+	s, created, err := c.registry.Launch(name, opts)
 	if err != nil {
 		return fmt.Errorf("starting session %q: %w", name, err)
 	}
-	c.registry.Set(name, s)
+	if !created {
+		o.printExisting(c, s, name)
+		return nil
+	}
 	if !o.noWait {
 		if err := o.waitForLaunch(c, s, name); err != nil {
 			return err

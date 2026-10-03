@@ -17,12 +17,12 @@ func newCloseCommand(c *commandContext) *cobra.Command {
 		Use:   "close",
 		Short: "Close a terminal session and kill its process",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := c.session(closeSession)
-			if err != nil {
+			if closeSession == "" {
+				return fmt.Errorf("Error: -s/--session is required")
+			}
+			if err := c.registry.Close(closeSession, "user-closed"); err != nil {
 				return err
 			}
-			s.Close("user-closed")
-			c.registry.Delete(closeSession)
 			fmt.Fprintf(c.stdout, "Session %q closed", closeSession)
 			return nil
 		},
@@ -53,22 +53,13 @@ func newRestartCommand(c *commandContext) *cobra.Command {
 }
 
 func (o *restartOptions) run(c *commandContext) error {
-	s, err := c.session(o.sessionName)
-	if err != nil {
-		return err
+	if o.sessionName == "" {
+		return fmt.Errorf("Error: -s/--session is required")
 	}
-
-	opts := o.prepare(s)
-
-	s.Close("session-restarting")
-	c.registry.DeleteIfMatches(o.sessionName, s)
-
-	newSess, err := session.New(opts)
+	newSess, err := c.registry.Restart(o.sessionName, o.prepare)
 	if err != nil {
 		return fmt.Errorf("Failed to restart session %q: %w", o.sessionName, err)
 	}
-
-	c.registry.Set(o.sessionName, newSess)
 
 	if !o.noWait {
 		if err := o.waitForRestart(c, newSess); err != nil {

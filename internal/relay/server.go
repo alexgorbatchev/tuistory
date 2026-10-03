@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,10 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/coder/websocket"
 	"github.com/remorses/tuistory/internal/session"
@@ -50,112 +46,6 @@ type CLIResult struct {
 
 // CLIRunnerFunc defines the signature for executing CLI commands against the daemon's sessions.
 type CLIRunnerFunc func(req CLIRequest, sessions *SessionRegistry, logger *slog.Logger) CLIResult
-
-// SessionRegistry manages thread-safe storage of sessions.
-type SessionRegistry struct {
-	mu       sync.RWMutex
-	sessions map[string]*session.Session
-}
-
-// NewSessionRegistry creates a new session registry.
-func NewSessionRegistry() *SessionRegistry {
-	return &SessionRegistry{
-		sessions: make(map[string]*session.Session),
-	}
-}
-
-// Get returns the session with the given name, if present.
-func (r *SessionRegistry) Get(name string) *session.Session {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.sessions[name]
-}
-
-// Set stores a session under the given name.
-func (r *SessionRegistry) Set(name string, s *session.Session) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sessions[name] = s
-}
-
-// Delete removes a session if present.
-func (r *SessionRegistry) Delete(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.sessions, name)
-}
-
-// DeleteIfMatches removes the session only if it currently points to target.
-func (r *SessionRegistry) DeleteIfMatches(name string, target *session.Session) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.sessions[name] == target {
-		delete(r.sessions, name)
-	}
-}
-
-// List returns a snapshot of all active sessions sorted by most recently started first.
-func (r *SessionRegistry) List() []SessionInfo {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	list := make([]SessionInfo, 0, len(r.sessions))
-	for name, s := range r.sessions {
-		list = append(list, SessionInfo{
-			Name:      name,
-			Command:   s.Command(),
-			Cwd:       s.Cwd(),
-			Cols:      s.Cols(),
-			Rows:      s.Rows(),
-			Dead:      s.IsDead(),
-			StartedAt: s.StartedAt().UnixMilli(),
-		})
-	}
-	slices.SortFunc(list, func(a, b SessionInfo) int {
-		if order := cmp.Compare(b.StartedAt, a.StartedAt); order != 0 {
-			return order
-		}
-		return cmp.Compare(a.Name, b.Name)
-	})
-	return list
-}
-
-// EvictStaleDead cleans up dead sessions older than 24 hours.
-func (r *SessionRegistry) EvictStaleDead() {
-	r.evictStaleDead(time.Now())
-}
-
-func (r *SessionRegistry) evictStaleDead(now time.Time) {
-	r.mu.Lock()
-	var stale []*session.Session
-
-	const oneDay = 24 * time.Hour
-	for name, s := range r.sessions {
-		if s.IsDead() {
-			if exited := s.ExitedAt(); exited != nil && now.Sub(*exited) > oneDay {
-				delete(r.sessions, name)
-				stale = append(stale, s)
-			}
-		}
-	}
-	r.mu.Unlock()
-	for _, s := range stale {
-		s.Close("stale-eviction")
-	}
-}
-
-// CloseAll closes every running session and empties the registry.
-func (r *SessionRegistry) CloseAll(reason string) {
-	r.mu.Lock()
-	sessions := r.sessions
-	r.sessions = make(map[string]*session.Session)
-	r.mu.Unlock()
-
-	// Closing invokes application callbacks, which may access the registry.
-	for _, s := range sessions {
-		s.Close(reason)
-	}
-}
 
 // Server handles relay daemon HTTP and WebSocket requests.
 type Server struct {
