@@ -54,10 +54,11 @@ func newLayout(cols, rows int, opts Options) (layout, error) {
 	}
 	cellHeight := math.Max(1, math.Round(float64(size)*lineHeight))
 	height := float64(rows)*cellHeight + 2*padding
-	if width <= 2*padding || cellWidth <= 0 || width*ratio > maxImagePixels || height*ratio > maxImagePixels || width*height*ratio*ratio > maxImagePixels {
+	pixelWidth, pixelHeight := math.Ceil(width*ratio), math.Ceil(height*ratio)
+	if width <= 2*padding || cellWidth <= 0 || pixelWidth > maxImagePixels || pixelHeight > maxImagePixels || pixelWidth*pixelHeight > maxImagePixels {
 		return layout{}, fmt.Errorf("terminal screenshot dimensions exceed rendering limits")
 	}
-	return layout{int(math.Ceil(width * ratio)), int(math.Ceil(height * ratio)), padding * ratio, cellWidth * ratio, cellHeight * ratio, ratio}, nil
+	return layout{int(pixelWidth), int(pixelHeight), padding * ratio, cellWidth * ratio, cellHeight * ratio, ratio}, nil
 }
 
 func (l layout) cellRect(x, y, width int) image.Rectangle {

@@ -149,6 +149,20 @@ func TestScreenshotRejectsInvalidDimensions(t *testing.T) {
 	}
 }
 
+func TestScreenshotLimitIncludesRoundedPixels(t *testing.T) {
+	_, err := newLayout(1, 1, Options{Width: 29826161, FontSize: 1, LineHeight: 0.01, PixelRatio: 1.5})
+	if err == nil {
+		t.Fatal("accepted rounded canvas exceeding pixel limit")
+	}
+	grid, err := newLayout(1, 1, Options{Width: 22369621, FontSize: 1, LineHeight: 0.01, PixelRatio: 1.5})
+	if err != nil {
+		t.Fatalf("rejected canvas within rounded pixel limit: %v", err)
+	}
+	if grid.width*grid.height > maxImagePixels {
+		t.Fatalf("accepted %d pixels above limit", grid.width*grid.height)
+	}
+}
+
 func TestScreenshotWideCellBackground(t *testing.T) {
 	img := renderImage(t, "\x1b[48;2;18;52;86m界\x1b[0mX", Options{})
 	span := int(math.Round(float64(img.Bounds().Dx()) / 10 * 2))
