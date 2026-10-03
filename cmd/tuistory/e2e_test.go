@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,27 +13,70 @@ import (
 	"github.com/remorses/tuistory/internal/client"
 )
 
-const testPort = 19951
+var testPort int
 
 var binaryPath string
 
 func TestMain(m *testing.M) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	testPort = listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	// Build the test binary in .tmp within project folder
 	projectTmp := filepath.Join("..", "..", ".tmp")
-	_ = os.MkdirAll(projectTmp, 0755)
+	if err := os.MkdirAll(projectTmp, 0755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	absTmp, err := filepath.Abs(projectTmp)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("TMPDIR", absTmp); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	projectBin := filepath.Join("..", "..", "bin")
+	if err := os.MkdirAll(projectBin, 0755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
-	absBinaryPath, err := filepath.Abs(filepath.Join(projectTmp, "tuistory-e2e-bin"))
+	absBinaryPath, err := filepath.Abs(filepath.Join(projectBin, "tuistory-e2e"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to get abs path: %v\n", err)
 		os.Exit(1)
 	}
 	binaryPath = absBinaryPath
-	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
+	coverDir, err := filepath.Abs(filepath.Join(projectTmp, "e2e-coverage"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := os.RemoveAll(coverDir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(coverDir, 0755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("GOCOVERDIR", coverDir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	buildCmd := exec.Command("go", "build", "-cover", "-coverpkg=github.com/remorses/tuistory/...", "-o", binaryPath, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to build test binary: %v\noutput: %s\n", err, string(out))
 		os.Exit(1)
 	}
-	defer os.Remove(binaryPath)
 
 	// Clean up any stale test daemon before tests
 	killTestDaemon(testPort)
@@ -41,7 +85,86 @@ func TestMain(m *testing.M) {
 
 	// Clean up test daemon after tests
 	killTestDaemon(testPort)
+	if err := os.Remove(binaryPath); err != nil {
+		fmt.Fprintf(os.Stderr, "removing test binary: %v\n", err)
+		code = 1
+	}
 	os.Exit(code)
+}
+
+func TestE2E_MigrationCLIRegressions(t *testing.T) {
+	t.Run("argv fidelity", func(t *testing.T) {
+		for _, nested := range []bool{false, true} {
+			env := []string{}
+			if nested {
+				env = append(env, "TUISTORY_SESSION=outer")
+			}
+			out, errOut, code := runCLIWithEnv(env, "", "-s", "argv-regression", "--", "printf", "%s", "one two;$HOME")
+			if code != 0 {
+				t.Fatalf("argv: %q %q %d", out, errOut, code)
+			}
+			if !nested {
+				out, errOut, code = runCLI("read", "-s", "argv-regression", "--all")
+				runCLI("close", "-s", "argv-regression")
+			}
+			if !strings.Contains(out, "one two;$HOME") {
+				t.Fatalf("argv nested=%v: %q %q %d", nested, out, errOut, code)
+			}
+		}
+	})
+	t.Run("session prefix", func(t *testing.T) {
+		out, errOut, code := runCLI("-s", "prefix-regression", "--no-wait", "--", "cat")
+		if code != 0 {
+			t.Fatalf("launch: %s %s", out, errOut)
+		}
+		defer runCLI("close", "-s", "prefix-regression")
+		_, errOut, code = runCLI("-s", "prefix-regression", "snapshot", "--trim", "--immediate")
+		if code != 0 {
+			t.Fatalf("prefix snapshot: %s", errOut)
+		}
+	})
+	t.Run("nested cwd and environment", func(t *testing.T) {
+		cwd := filepath.Join("..", "..", ".tmp")
+		abs, err := filepath.Abs(cwd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, errOut, code := runCLIWithEnv([]string{"TUISTORY_SESSION=outer"}, "", "--cwd", abs, "--env", "MIGRATION_VALUE=one,two", "--", "sh", "-c", "printf '%s|%s' \"$PWD\" \"$MIGRATION_VALUE\"")
+		if code != 0 || !strings.Contains(out, abs+"|one,two") {
+			t.Fatalf("nested: %q %q %d", out, errOut, code)
+		}
+	})
+	t.Run("comma environment", func(t *testing.T) {
+		out, errOut, code := runCLI("-s", "comma-regression", "--env", "MIGRATION_VALUE=one,two", "--", "sh", "-c", "printf '%s' \"$MIGRATION_VALUE\"")
+		if code != 0 {
+			t.Fatalf("launch: %s %s", out, errOut)
+		}
+		defer runCLI("close", "-s", "comma-regression")
+		out, errOut, code = runCLI("read", "-s", "comma-regression", "--all")
+		if code != 0 || !strings.Contains(out, "one,two") {
+			t.Fatalf("comma: %q %q %d", out, errOut, code)
+		}
+	})
+	t.Run("skill rejects args", func(t *testing.T) {
+		_, _, code := runCLI("skill", "extra")
+		if code == 0 {
+			t.Fatal("skill accepted extra argument")
+		}
+	})
+	t.Run("raw version", func(t *testing.T) {
+		out, errOut, code := runCLI("--version")
+		if code != 0 || out != version {
+			t.Fatalf("version: %q %q %d", out, errOut, code)
+		}
+	})
+	t.Run("offline help paths", func(t *testing.T) {
+		for _, args := range [][]string{{"snapshot", "--help"}, {"help", "snapshot"}, {"completion", "bash", "--help"}, {"skill", "--help"}} {
+			out, errOut, code := runCLIWithEnv([]string{"AGENT=yes", "TUISTORY_PORT=1"}, "", args...)
+			if code != 0 || !strings.HasPrefix(out, "ALERT: Agents must read") {
+				t.Fatalf("help %v: %q %q %d", args, out, errOut, code)
+			}
+		}
+	})
 }
 
 func killTestDaemon(port int) {
@@ -544,4 +667,3 @@ func TestE2E_Logfile(t *testing.T) {
 		t.Fatalf("logfile failed (%d): %s", code, out)
 	}
 }
-

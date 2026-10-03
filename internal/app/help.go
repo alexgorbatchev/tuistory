@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"fmt"
@@ -16,6 +16,7 @@ var techCatalog = cobrahelptree.TechCatalog{
 	"tuistory launch": {
 		Summary:     "Launch a new terminal session with a PTY",
 		Description: "Spawns command in background daemon with configurable dimensions.",
+		Args:        []cobrahelptree.ArgSpec{{Name: "[command]", Description: "Shell command; arguments after -- are passed verbatim"}},
 	},
 	"tuistory snapshot": {
 		Summary:     "Capture the current terminal screen as text",
@@ -32,22 +33,27 @@ var techCatalog = cobrahelptree.TechCatalog{
 	"tuistory type": {
 		Summary:     "Type text into the terminal character by character",
 		Description: "Sends each character individually with delay to simulate real typing.",
+		Args:        []cobrahelptree.ArgSpec{{Name: "<text>", Description: "Text to send to the session"}},
 	},
 	"tuistory press": {
 		Summary:     "Press one or more keys simultaneously (key chord)",
 		Description: "Sends key chords to terminal (enter, ctrl c, tab, etc.).",
+		Args:        []cobrahelptree.ArgSpec{{Name: "<key>", Description: "Key name"}, {Name: "[...keys]", Description: "Additional keys in the chord"}},
 	},
 	"tuistory click": {
 		Summary:     "Click on text matching a pattern in the terminal",
 		Description: "Searches terminal screen for pattern and sends mouse click at its position.",
+		Args:        []cobrahelptree.ArgSpec{{Name: "<pattern>", Description: "Text or /regular expression/ to click"}},
 	},
 	"tuistory click-at": {
 		Summary:     "Click at specific terminal coordinates (column, row)",
 		Description: "Sends a mouse click event at given (x, y) 0-based coordinate.",
+		Args:        []cobrahelptree.ArgSpec{{Name: "<x>", Description: "Zero-based column"}, {Name: "<y>", Description: "Zero-based row"}},
 	},
 	"tuistory wait": {
 		Summary:     "Wait for text or regex pattern to appear in the terminal",
 		Description: "Polls terminal content until pattern matches or timeout is reached.",
+		Args:        []cobrahelptree.ArgSpec{{Name: "<pattern>", Description: "Text or /regular expression/ to wait for"}},
 	},
 	"tuistory wait-idle": {
 		Summary:     "Wait for terminal to stop receiving data (become idle)",
@@ -56,14 +62,17 @@ var techCatalog = cobrahelptree.TechCatalog{
 	"tuistory scroll": {
 		Summary:     "Scroll the terminal up or down using mouse wheel events",
 		Description: "Sends SGR mouse scroll events up or down.",
+		Args:        []cobrahelptree.ArgSpec{{Name: "<direction>", Description: "up or down"}, {Name: "[lines]", Description: "Number of lines, default 1"}},
 	},
 	"tuistory resize": {
 		Summary:     "Resize the terminal to new dimensions",
 		Description: "Changes terminal width and height, triggering SIGWINCH in running application.",
+		Args:        []cobrahelptree.ArgSpec{{Name: "<cols>", Description: "Terminal columns"}, {Name: "<rows>", Description: "Terminal rows"}},
 	},
 	"tuistory capture-frames": {
 		Summary:     "Capture multiple rapid terminal snapshots after a keypress",
 		Description: "Sends key(s) and captures N frames at fixed interval as JSON array.",
+		Args:        []cobrahelptree.ArgSpec{{Name: "<key>", Description: "Key name"}, {Name: "[...keys]", Description: "Additional keys in the chord"}},
 	},
 	"tuistory close": {
 		Summary:     "Close a terminal session and kill its process",

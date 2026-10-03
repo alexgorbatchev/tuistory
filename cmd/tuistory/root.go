@@ -18,11 +18,12 @@ func newRootCommand() *cobra.Command {
 	var stdout, stderr bytes.Buffer
 
 	cmd := app.NewCommand(reg, cwd, envToMap(os.Environ()), &stdout, &stderr)
+	cmd.SetOut(os.Stdout)
+	cmd.SetErr(os.Stderr)
 	cmd.Version = version
 	cmd.SetVersionTemplate("{{.Version}}\n")
 	cmd.AddCommand(newSkillCommand())
 
-	setupHelp(cmd)
 	return cmd
 }
 

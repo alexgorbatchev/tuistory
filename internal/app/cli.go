@@ -65,17 +65,9 @@ func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[stri
 		timeout     int
 	)
 
-	launchAction := func(cmd *cobra.Command, rawArgs []string, positionalCmd string) error {
-		// Determine the launch command:
-		// Priority 1: Positional arg if specified (e.g. `launch "echo hello"`)
-		// Priority 2: Command after `--` in args
-		launchCmd := positionalCmd
-		if launchCmd == "" {
-			dashArgs := cmd.Flags().Args()
-			if len(dashArgs) > 0 {
-				launchCmd = strings.Join(dashArgs, " ")
-			}
-		}
+	launchAction := func(cmd *cobra.Command, rawArgs []string) error {
+		program, programArgs, label := LaunchCommand(cmd, rawArgs)
+		launchCmd := label
 
 		if launchCmd == "" {
 			return fmt.Errorf("Error: missing command. Use `tuistory -- cmd` or `tuistory launch \"cmd\"`.")
@@ -141,8 +133,8 @@ func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[stri
 		mergedEnv["TUISTORY_SESSION"] = targetSession
 
 		sess, err := session.New(session.LaunchOptions{
-			Command:   "sh",
-			Args:      []string{"-c", launchCmd},
+			Command:   program,
+			Args:      programArgs,
 			Cols:      cols,
 			Rows:      rows,
 			Cwd:       targetCwd,
@@ -201,6 +193,12 @@ func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[stri
 		Short:         "Run dev servers and TUIs that AI agents can read, wait on, and type into",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 && cmd.ArgsLenAtDash() != 0 {
+				return fmt.Errorf("Unknown command: %s", args[0])
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// If bare positional arguments exist (without -- or launch), reject them!
 			// Notice: Cobra puts args before and after -- into args if no subcommand matched.
@@ -209,7 +207,7 @@ func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[stri
 			if len(dashArgs) == 0 {
 				return cmd.Help()
 			}
-			return launchAction(cmd, args, "")
+			return launchAction(cmd, args)
 		},
 	}
 
@@ -218,7 +216,7 @@ func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[stri
 		cmd.Flags().IntVar(&cols, "cols", 120, "Terminal columns")
 		cmd.Flags().IntVar(&rows, "rows", 36, "Terminal rows")
 		cmd.Flags().StringVar(&cwd, "cwd", "", "Working directory")
-		cmd.Flags().StringSliceVar(&envFlags, "env", nil, "Environment variable (repeatable)")
+		cmd.Flags().StringArrayVar(&envFlags, "env", nil, "Environment variable (repeatable)")
 		cmd.Flags().BoolVar(&attach, "attach", false, "Deprecated: attach is now automatic in TTY mode")
 		cmd.Flags().BoolVar(&background, "background", false, "Run in background without attaching")
 		cmd.Flags().BoolVar(&noWait, "no-wait", false, "Don't wait for initial data")
@@ -233,14 +231,7 @@ func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[stri
 		Short: "Launch a new terminal session with a PTY",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dashArgs := cmd.Flags().Args()
-			var cmdStr string
-			if len(dashArgs) > 0 {
-				cmdStr = strings.Join(dashArgs, " ")
-			} else if len(args) > 0 {
-				cmdStr = strings.Join(args, " ")
-			}
-			return launchAction(cmd, args, cmdStr)
+			return launchAction(cmd, args)
 		},
 	}
 	addLaunchFlags(launchCmd)
@@ -350,62 +341,29 @@ func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[stri
 				return fmt.Errorf("Session %q not found", readSession)
 			}
 
+			if readFollow && !readAll && !s.HasUnreadOutput() && !s.IsDead() {
+				s.WaitForUnreadOutput(time.Duration(readTimeout) * time.Millisecond)
+				if !s.HasUnreadOutput() && !s.IsDead() {
+					return fmt.Errorf("No new output after %dms", readTimeout)
+				}
+			}
+			var txt string
+			if readAll {
+				txt = s.ReadAll()
+			} else {
+				txt = s.Read()
+			}
+			if readTrim {
+				txt = strings.TrimRight(txt, " \t\r\n")
+			}
 			exitSuffix := ""
 			if s.IsDead() {
 				if info := s.ExitInfo(); info != nil {
 					exitSuffix = fmt.Sprintf("\n[process exited with code %d]", info.ExitCode)
 				}
 			}
-
-			if readAll {
-				txt := s.ReadAll()
-				if readTrim {
-					txt = strings.TrimRight(txt, " \t\r\n")
-				}
-				fmt.Fprint(stdout, txt+exitSuffix)
-				return nil
-			}
-
-			if readFollow {
-				if s.HasUnreadOutput() {
-					txt := s.Read()
-					if readTrim {
-						txt = strings.TrimRight(txt, " \t\r\n")
-					}
-					fmt.Fprint(stdout, txt+exitSuffix)
-					return nil
-				}
-				if s.IsDead() {
-					fmt.Fprint(stdout, strings.TrimLeft(exitSuffix, "\n"))
-					return nil
-				}
-
-				deadline := time.Now().Add(time.Duration(readTimeout) * time.Millisecond)
-				for time.Now().Before(deadline) {
-					_ = s.WaitIdle(500 * time.Millisecond)
-					if s.HasUnreadOutput() {
-						txt := s.Read()
-						if readTrim {
-							txt = strings.TrimRight(txt, " \t\r\n")
-						}
-						fmt.Fprint(stdout, txt+exitSuffix)
-						return nil
-					}
-					if s.IsDead() {
-						txt := s.Read()
-						if readTrim {
-							txt = strings.TrimRight(txt, " \t\r\n")
-						}
-						fmt.Fprint(stdout, txt+exitSuffix)
-						return nil
-					}
-				}
-				return fmt.Errorf("No new output after %dms", readTimeout)
-			}
-
-			txt := s.Read()
-			if readTrim {
-				txt = strings.TrimRight(txt, " \t\r\n")
+			if txt == "" && readFollow {
+				exitSuffix = strings.TrimLeft(exitSuffix, "\n")
 			}
 			fmt.Fprint(stdout, txt+exitSuffix)
 			return nil
@@ -448,7 +406,7 @@ func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[stri
 				_ = s.WaitIdle(2 * time.Second)
 			}
 
-			data, err := screenshot.RenderTerminal(s.Terminal(), screenshot.Options{
+			data, err := s.RenderScreenshot(screenshot.Options{
 				Width:      shotWidth,
 				FontSize:   shotFontSize,
 				LineHeight: shotLineHeight,
@@ -1001,10 +959,16 @@ func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[stri
 	attachCmd.Flags().StringVarP(&sessionName, "session", "s", "", "Session name")
 	rootCmd.AddCommand(attachCmd)
 
+	rootCmd.SetOut(stdout)
+	rootCmd.SetErr(stderr)
+	setupHelp(rootCmd)
 	return rootCmd
 }
 
 func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
 	for _, c := range s {
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '/' || c == ':' || c == '-') {
 			return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"

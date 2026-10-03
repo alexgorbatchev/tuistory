@@ -2,8 +2,11 @@ package app
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/remorses/tuistory/internal/relay"
 )
@@ -46,6 +49,167 @@ func TestAppLaunchAndRead(t *testing.T) {
 	}
 	if !strings.Contains(res.Stdout, `Session "app-test" closed`) {
 		t.Fatalf("expected close stdout, got: %q", res.Stdout)
+	}
+}
+
+func TestCommandSessionValidation(t *testing.T) {
+	commands := [][]string{{"snapshot"}, {"read"}, {"screenshot"}, {"type", "hello"}, {"press", "enter"}, {"click", "hello"}, {"click-at", "0", "0"}, {"wait", "hello"}, {"wait-idle"}, {"scroll", "up"}, {"resize", "80", "24"}, {"capture-frames", "enter"}, {"close"}, {"restart"}}
+	for _, args := range commands {
+		t.Run(args[0], func(t *testing.T) {
+			reg := relay.NewSessionRegistry()
+			for _, name := range []string{"", "nonexistent"} {
+				argv := append([]string{}, args...)
+				want := "-s/--session is required"
+				if name != "" {
+					argv = append(argv, "-s", name)
+					want = "not found"
+				}
+				res := ExecuteCommand(argv, reg, ".", nil)
+				if res.ExitCode == 0 || !strings.Contains(res.Stderr, want) {
+					t.Fatalf("%v: %+v", argv, res)
+				}
+			}
+		})
+	}
+}
+
+func TestReadFollowReportsExit(t *testing.T) {
+	reg := relay.NewSessionRegistry()
+	defer reg.CloseAll("test-done")
+	res := ExecuteCommand([]string{"launch", "sleep 0.1; exit 7", "-s", "follow-exit", "--no-wait"}, reg, ".", nil)
+	if res.ExitCode != 0 {
+		t.Fatal(res.Stderr)
+	}
+	res = ExecuteCommand([]string{"read", "-s", "follow-exit", "--follow", "--timeout", "1000"}, reg, ".", nil)
+	if res.ExitCode != 0 || !strings.Contains(res.Stdout, "[process exited with code 7]") {
+		t.Fatalf("exit lost: %+v", res)
+	}
+}
+
+func TestScreenshotConcurrentOutput(t *testing.T) {
+	reg := relay.NewSessionRegistry()
+	defer reg.CloseAll("test-done")
+	cwd := t.TempDir()
+	res := ExecuteCommand([]string{"launch", "while :; do printf '\\033[31mchanging\\033[0m\\r'; done", "-s", "changing", "--cols", "20", "--rows", "3"}, reg, cwd, nil)
+	if res.ExitCode != 0 {
+		t.Fatal(res.Stderr)
+	}
+	output := filepath.Join(cwd, "screen.png")
+	for range 10 {
+		res = ExecuteCommand([]string{"screenshot", "-s", "changing", "--immediate", "-o", output}, reg, cwd, nil)
+		if res.ExitCode != 0 {
+			t.Fatal(res.Stderr)
+		}
+	}
+	if data, err := os.ReadFile(output); err != nil || len(data) == 0 {
+		t.Fatalf("screenshot: %v", err)
+	}
+}
+
+func TestCommandOutputVariants(t *testing.T) {
+	reg := relay.NewSessionRegistry()
+	defer reg.CloseAll("test-done")
+	cwd := t.TempDir()
+	run := func(args ...string) relay.CLIResult { return ExecuteCommand(args, reg, cwd, nil) }
+	res := run("launch", "printf '\033[1;3;4mstyled\033[0m'; sleep 0.2", "-s", "styled")
+	if res.ExitCode != 0 {
+		t.Fatal(res.Stderr)
+	}
+	for _, flag := range []string{"--bold", "--italic", "--underline"} {
+		res = run("snapshot", "-s", "styled", flag, "--immediate", "--no-cursor")
+		if res.ExitCode != 0 || !strings.Contains(res.Stdout, "styled") {
+			t.Fatalf("filter %s: %+v", flag, res)
+		}
+	}
+	res = run("read", "-s", "styled", "--follow", "--trim")
+	if res.ExitCode != 0 || !strings.Contains(res.Stdout, "styled") {
+		t.Fatalf("follow unread: %+v", res)
+	}
+	if !reg.Get("styled").WaitForExit(time.Second) {
+		t.Fatal("process did not exit")
+	}
+	res = run("snapshot", "-s", "styled", "--json", "--immediate", "--no-cursor")
+	var snap struct {
+		Text     string
+		Dead     bool
+		ExitCode int
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &snap); err != nil || !snap.Dead || snap.ExitCode != 0 || !strings.Contains(snap.Text, "styled") {
+		t.Fatalf("dead snapshot: %+v %v", res, err)
+	}
+	res = run("read", "-s", "styled", "--follow", "--trim")
+	if res.ExitCode != 0 || !strings.Contains(res.Stdout, "process exited with code 0") {
+		t.Fatalf("dead follow: %+v", res)
+	}
+	res = run("launch", "printf relaunched", "-s", "styled")
+	if res.ExitCode != 0 {
+		t.Fatalf("dead relaunch: %+v", res)
+	}
+	res = run("--cwd", cwd, "--", "printf", "%s:%s", "a'b", "")
+	if res.ExitCode != 0 {
+		t.Fatalf("default argv session: %+v", res)
+	}
+	res = run("launch", "cat", "-s", "silent", "--timeout", "1")
+	if res.ExitCode != 0 || !strings.Contains(res.Stderr, "produced no output") {
+		t.Fatalf("silent launch: %+v", res)
+	}
+	res = run("read", "-s", "silent", "--follow", "--timeout", "1")
+	if res.ExitCode == 0 || !strings.Contains(res.Stderr, "No new output") {
+		t.Fatalf("follow timeout: %+v", res)
+	}
+	for _, args := range [][]string{{"launch"}, {"--cwd", filepath.Join(cwd, "missing"), "--", "cat"}, {"unknown"}} {
+		res = run(args...)
+		if res.ExitCode == 0 {
+			t.Fatalf("invalid launch accepted %v: %+v", args, res)
+		}
+	}
+}
+
+func TestCommandLaunchVariants(t *testing.T) {
+	reg := relay.NewSessionRegistry()
+	defer reg.CloseAll("test-done")
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, "child"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-s", "live", "--cwd", "child", "--env", "VALUE=a,b", "--background", "--no-wait", "--", "cat"},
+		{"launch", "cat", "-s", "live", "--background"},
+		{"launch", "cat", "-s", "live"},
+	} {
+		res := ExecuteCommand(args, reg, cwd, map[string]string{"BASE": "kept"})
+		if res.ExitCode != 0 || !strings.Contains(res.Stdout, "live") {
+			t.Fatalf("launch %v: %+v", args, res)
+		}
+	}
+	s := reg.Get("live")
+	if s.Cwd() != filepath.Join(cwd, "child") || s.Env()["VALUE"] != "a,b" || s.Env()["BASE"] != "kept" {
+		t.Fatalf("launch context lost: %s %v", s.Cwd(), s.Env())
+	}
+	for _, tt := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"resize", "bad", "10"}, "invalid cols"},
+		{[]string{"resize", "10", "bad"}, "invalid rows"},
+		{[]string{"click-at", "bad", "0"}, "invalid x"},
+		{[]string{"click-at", "0", "bad"}, "invalid y"},
+		{[]string{"scroll", "sideways"}, "Invalid direction"},
+		{[]string{"capture-frames", "bad-key"}, "Invalid key"},
+		{[]string{"wait", "absent", "--timeout", "1"}, "timed out"},
+		{[]string{"click", "absent", "--timeout", "1"}, "timed out"},
+		{[]string{"screenshot", "--immediate", "-o", filepath.Join(cwd, "missing", "shot.png")}, "writing screenshot"},
+	} {
+		res := ExecuteCommand(append(tt.args, "-s", "live"), reg, cwd, nil)
+		if res.ExitCode == 0 || !strings.Contains(strings.ToLower(res.Stderr), strings.ToLower(tt.want)) {
+			t.Fatalf("%v: %+v", tt.args, res)
+		}
+	}
+	for _, args := range [][]string{{"logfile"}, {"daemon-stop"}, {"attach"}, {"--help"}, {"snapshot", "--help"}} {
+		res := ExecuteCommand(args, reg, cwd, nil)
+		if res.ExitCode != 0 || res.Stdout == "" {
+			t.Fatalf("metadata %v: %+v", args, res)
+		}
 	}
 }
 
