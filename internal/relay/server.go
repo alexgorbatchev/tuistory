@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -109,6 +111,12 @@ func (r *SessionRegistry) List() []SessionInfo {
 			StartedAt: s.StartedAt().UnixMilli(),
 		})
 	}
+	slices.SortFunc(list, func(a, b SessionInfo) int {
+		if order := cmp.Compare(b.StartedAt, a.StartedAt); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.Name, b.Name)
+	})
 	return list
 }
 
@@ -273,12 +281,24 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		attachedSession *session.Session
 		sessionName     string
 		unsubData       func()
+		unsubExit       func()
+		unsubClosing    func()
 	)
-	defer func() {
+	unsubscribe := func() {
 		if unsubData != nil {
 			unsubData()
+			unsubData = nil
 		}
-	}()
+		if unsubExit != nil {
+			unsubExit()
+			unsubExit = nil
+		}
+		if unsubClosing != nil {
+			unsubClosing()
+			unsubClosing = nil
+		}
+	}
+	defer unsubscribe()
 
 	for {
 		typ, reader, err := conn.Reader(ctx)
@@ -302,6 +322,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 			if err := json.Unmarshal(payload, &ctrl); err == nil && ctrl.Type != "" {
 				switch ctrl.Type {
 				case "attach":
+					unsubscribe()
 					sessionName = ctrl.Session
 					attachedSession = s.sessions.Get(sessionName)
 					if attachedSession == nil {
@@ -329,7 +350,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 					})
 
 					// Forward exit notification
-					attachedSession.OnExit(func(info session.ExitInfo) {
+					unsubExit = attachedSession.OnExit(func(info session.ExitInfo) {
 						exitMsg, _ := json.Marshal(map[string]any{
 							"type":     "exit",
 							"exitCode": info.ExitCode,
@@ -339,7 +360,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 					})
 
 					// Forward closing notification
-					attachedSession.OnClosing(func(reason string) {
+					unsubClosing = attachedSession.OnClosing(func(reason string) {
 						closeMsg, _ := json.Marshal(map[string]string{
 							"type":   "closing",
 							"reason": reason,
@@ -348,21 +369,6 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 						_ = conn.Close(websocket.StatusNormalClosure, reason)
 					})
 
-					if attachedSession.IsDead() {
-						info := attachedSession.ExitInfo()
-						exitCode := 0
-						sig := 0
-						if info != nil {
-							exitCode = info.ExitCode
-							sig = info.Signal
-						}
-						exitMsg, _ := json.Marshal(map[string]any{
-							"type":     "exit",
-							"exitCode": exitCode,
-							"signal":   sig,
-						})
-						_ = conn.Write(ctx, websocket.MessageText, exitMsg)
-					}
 					continue
 
 				case "resize":
