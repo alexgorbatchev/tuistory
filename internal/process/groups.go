@@ -3,6 +3,7 @@ package process
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"golang.org/x/sys/unix"
@@ -58,12 +59,14 @@ func Groups(sessionID int) ([]int, error) {
 // KillSessionGroups signals all process groups belonging to sessionID.
 func KillSessionGroups(sessionID int, sig unix.Signal) {
 	groups, err := Groups(sessionID)
-	if err != nil || len(groups) == 0 {
-		_ = unix.Kill(-sessionID, sig)
+	if err != nil {
+		slog.Error("reading session process groups", "session", sessionID, "error", err)
 		return
 	}
 
 	for _, pgid := range groups {
-		_ = unix.Kill(-pgid, sig)
+		if err := unix.Kill(-pgid, sig); err != nil && !errors.Is(err, unix.ESRCH) {
+			slog.Error("signalling session process group", "session", sessionID, "group", pgid, "error", err)
+		}
 	}
 }
