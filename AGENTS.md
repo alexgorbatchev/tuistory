@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-02 06:50
-last_modified: 2026-10-02 21:30
+last_modified: 2026-10-02 22:26
 status: current
 ---
 
@@ -43,13 +43,11 @@ Run this before every local smoke test:
 
 ```bash
 ./bin/tuistory daemon-stop
-# also stop the test daemon if you've been running the test suite
-TUISTORY_PORT=19951 ./bin/tuistory daemon-stop
 ```
 
 The next `./bin/tuistory <command>` will spawn a fresh daemon with your updated binary.
 
-The test suite handles this automatically: `e2e_test.go` uses port `19951` (separate from default `19977`) and kills the test daemon in `TestMain`. You do **not** need to manually stop daemons before running `just test`.
+The test suite handles this automatically: `e2e_test.go` reserves a dynamic port separate from the default `19977` and stops its owned daemon in `TestMain`. You do **not** need to manually stop daemons before running `just test`.
 
 ## Canonical CLI Syntax
 
@@ -86,7 +84,8 @@ In Go, `os.Args` preserves `--` exactly. Options must precede `--`; everything a
 ### Always
 - Any time code is changed such that results from running that code are changed, a test file must be changed as well, and 90% code coverage is required (the `scripts/` folder is explicitly excluded from this rule).
 - Automatically record all new user instructions in the most appropriate `AGENTS.md` file upon receipt (and check first if conflicts exist).
-- Run `just check` (`go vet ./... && go test -v ./...`) and `go mod tidy -diff` before declaring work complete.
+- Run `just check` (static analysis, race tests, and coverage enforcement) and `go mod tidy -diff` before declaring work complete.
+- `just check` also runs race detection and enforces at least 90% statement coverage by combining fresh unit-test coverage with instrumented compiled CLI/daemon execution. Inspect `.tmp/coverage.out` and `.tmp/coverage-merged/`; never combine artifacts from different revisions.
 - Isolate temporary files to `.tmp/` within the project root instead of global `/tmp`.
 
 ### Ask First

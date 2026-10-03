@@ -28,7 +28,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	// Build the test binary in .tmp within project folder
+	// Build an instrumented test binary in the project's ignored bin directory.
 	projectTmp := filepath.Join("..", "..", ".tmp")
 	if err := os.MkdirAll(projectTmp, 0755); err != nil {
 		fmt.Fprintln(os.Stderr, err)

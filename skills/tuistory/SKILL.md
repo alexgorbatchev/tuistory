@@ -4,7 +4,7 @@ description: Use when launching, inspecting, waiting on, and interacting with ba
 author: alexgorbatchev
 metadata:
   created_on: 2026-04-14 12:00
-  last_modified: 2026-10-02 12:31
+  last_modified: 2026-10-02 22:26
   status: current
 ---
 
@@ -71,19 +71,26 @@ tuistory -s app snapshot --trim
 ### `tuistory [options] -- <command>` / `tuistory launch [command]`
 Launch a terminal session in the background daemon with a PTY.
 
+Use `--` to preserve each argument literally, including spaces, dollar signs, and shell metacharacters. Use an explicit shell when shell syntax is needed: `tuistory -- sh -c 'printf ready; exec ./server'`. The positional `launch "command"` form accepts shell source. Restart preserves the original arguments, cwd, dimensions, and environment.
+
+In a terminal, launch attaches automatically unless `--background` or agent mode is enabled. Inside an existing tuistory session, or when `TRAFORO_URL` or `SIGILLO` is set, launch runs the child in the foreground with the requested cwd and environment.
+
+Without `--no-wait`, launch waits for initial PTY output. A live silent process remains running and produces a timeout warning; a process that exits without output produces an error and remains available for inspection.
+
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `--session` | `-s` | auto | Session name (`<cwd-basename>-<hash>-<command>`) |
 | `--cols` | | `120` | Terminal columns |
 | `--rows` | | `36` | Terminal rows |
 | `--cwd` | | caller cwd | Working directory for child process |
-| `--env` | | `[]` | Environment variable `KEY=VAL` (repeatable) |
+| `--env` | | `[]` | Environment variable `KEY=VAL` (repeatable; commas remain part of the value) |
+| `--attach` | | `false` | Deprecated accepted flag; attachment is automatic in terminal mode |
 | `--background` | | `false` | Run in background without attaching |
 | `--no-wait` | | `false` | Skip waiting for initial process output |
 | `--timeout` | | `5000` | Initial output wait timeout in milliseconds |
 
 ### `tuistory snapshot`
-Capture the current terminal screen buffer as clean text.
+Capture the terminal buffer, including retained scrollback, as text. Insert the cursor marker at its terminal cell without splitting Unicode characters. Filters replace nonmatching cells with spaces; foreground/background filters match explicit cell colors, not screenshot theme defaults.
 
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -94,8 +101,8 @@ Capture the current terminal screen buffer as clean text.
 | `--bold` | | `false` | Extract only bold text cells (others replaced by spaces) |
 | `--italic` | | `false` | Extract only italic text cells |
 | `--underline` | | `false` | Extract only underlined text cells |
-| `--fg` | | `""` | Extract only text cells matching foreground color hex |
-| `--bg` | | `""` | Extract only text cells matching background color hex |
+| `--fg` | | `""` | Extract cells matching foreground `#RRGGBB` (case-insensitive) |
+| `--bg` | | `""` | Extract cells matching background `#RRGGBB` (case-insensitive) |
 | `--no-cursor` | | `false` | Hide cursor marker (`█`) in snapshot output |
 
 ### `tuistory read`
@@ -106,7 +113,7 @@ Read process output stream since previous read call (advancing cursor), or read 
 | `--session` | `-s` | (required) | Target session name |
 | `--all` | | `false` | Return entire buffered output (up to 1MB) without advancing read cursor |
 | `--trim` | | `false` | Trim trailing whitespace from output |
-| `--follow` | | `false` | Block until new output arrives, then return it |
+| `--follow` | | `false` | Block until new output or process exit; report timeout if a live process stays silent |
 | `--timeout` | | `5000` | Timeout for `--follow` in milliseconds |
 
 ### `tuistory wait <pattern>`
@@ -167,11 +174,15 @@ Send mouse wheel scroll events up or down: `tuistory -s app scroll down 5`.
 | `--x` | | center | X coordinate for scroll |
 | `--y` | | center | Y coordinate for scroll |
 
+Coordinates must be nonnegative and are 0-based. Omitted coordinates select the center; explicitly passing zero selects the terminal edge. Negative coordinates return an error before sending input.
+
 ### `tuistory resize <cols> <rows>`
 Resize terminal dimensions and send `SIGWINCH` to running process: `tuistory -s app resize 160 50`.
 
 ### `tuistory screenshot`
 Render terminal buffer to a PNG image file and print output path to stdout.
+
+Include retained scrollback and trim trailing empty rows. Preserve ANSI colors, bold, italic, inverse, faint, underline, and strikethrough, with bundled CJK and Nerd icon fallback fonts. A blank buffer returns `no content to render`. Width crops or extends the canvas without changing terminal cell spacing; pixel ratio scales the rendered image. Reject images larger than 67,108,864 pixels before allocation.
 
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -184,11 +195,18 @@ Render terminal buffer to a PNG image file and print output path to stdout.
 | `--foreground`| | `#c0caf5` | Text color hex |
 | `--pixel-ratio`| | `1` | Scaling ratio (use 2 for HiDPI) |
 | `--padding` | | `2` | Outer frame padding in terminal cells |
+| `--frame-color` | | auto | Frame color hex; otherwise detect the dominant terminal edge background |
 | `--immediate` | | `false` | Do not wait for idle before capturing |
 
 ### `tuistory capture-frames <key> [...keys]`
 Send key(s) and immediately capture rapid text frames as a JSON array to detect layout shifts and transitions:
 `tuistory -s app capture-frames tab --count 5 --interval 20`.
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--session`, `-s` | required | Target session name |
+| `--count` | `5` | Number of snapshots |
+| `--interval` | `10` | Milliseconds between snapshots |
 
 ### `tuistory restart`
 Gracefully restart a session (SIGINT -> SIGTERM if needed) and relaunch with identical command, cwd, dimensions, and environment.
@@ -218,7 +236,10 @@ Interactive full-screen TUI for humans to view live output and send keystrokes.
 *(Agents must not use attach; use `snapshot`, `read`, and `wait`.)*
 
 ### `tuistory skill`
-Print this operational guide verbatim.
+Print this operational guide verbatim. Accept no positional arguments. Help, version, and skill commands run without starting the daemon; in agent mode every public help path begins with the alert to read this guide.
+
+### `tuistory --version`
+Print only the version string and a newline.
 
 ## Environment Variables
 
@@ -228,4 +249,8 @@ Print this operational guide verbatim.
 | `TUISTORY_LOG_FILE_PATH` | Daemon log file path override |
 | `TUISTORY_SESSION` | Set in child processes to indicate running inside tuistory |
 | `TRAFORO_URL` / `SIGILLO` | Triggers passthrough mode, running child in foreground |
-| `AGENT` / `AI_AGENT` | Disables interactive auto-attach for scripts and agents |
+| `AGENT` | Set to `1`, `true`, or `yes` (case-insensitive) for agent help and to disable auto-attach |
+| `AI_AGENT` | Any nonempty agent name enables agent help and disables auto-attach; an empty value is ignored |
+| `TMPDIR` | Override the temporary directory used for daemon logs, PID/lock files, and default screenshots |
+
+The client checks both daemon protocol identity and release version. An incompatible TypeScript daemon is replaced even when its release version is higher. Stop only sessions and daemons you are authorized to stop.
