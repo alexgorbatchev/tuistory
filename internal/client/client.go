@@ -35,8 +35,14 @@ const (
 
 // RelayStatus holds the probe result of the relay port.
 type RelayStatus struct {
-	Kind    RelayStatusKind
-	Version string
+	Kind     RelayStatusKind
+	Version  string
+	Protocol string
+}
+
+func (s RelayStatus) compatible(version string) bool {
+	return s.Kind == StatusHealthy && s.Protocol == relay.Protocol &&
+		(version == "" || CompareVersions(s.Version, version) >= 0)
 }
 
 // CompareVersions compares two semver strings: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2.
@@ -84,13 +90,16 @@ func GetDefaultSessionName(command, cwd string) string {
 func ProbeRelay(port int) RelayStatus {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/version", port))
-	if err == nil && resp.StatusCode == http.StatusOK {
+	if resp != nil {
 		defer resp.Body.Close()
+	}
+	if err == nil && resp.StatusCode == http.StatusOK {
 		var data struct {
-			Version string `json:"version"`
+			Version  string `json:"version"`
+			Protocol string `json:"protocol"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err == nil && data.Version != "" {
-			return RelayStatus{Kind: StatusHealthy, Version: data.Version}
+			return RelayStatus{Kind: StatusHealthy, Version: data.Version, Protocol: data.Protocol}
 		}
 	}
 
@@ -115,36 +124,13 @@ func isPortOccupied(port int) bool {
 	return false
 }
 
-func readPidFile(port int) (int, error) {
-	data, err := os.ReadFile(relay.PidFilePath(port))
-	if err != nil {
-		return 0, err
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("invalid pid in pidfile: %s", string(data))
-	}
-	return n, nil
-}
-
 // KillRelay terminates whatever process owns the relay port.
 func KillRelay(port int) (bool, error) {
-	pid, _ := readPidFile(port)
-	if pid > 0 {
-		_ = unix.Kill(pid, unix.SIGTERM)
-		start := time.Now()
-		for time.Since(start) < 3*time.Second {
-			if err := unix.Kill(pid, 0); errors.Is(err, unix.ESRCH) {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		_ = unix.Kill(pid, unix.SIGKILL)
-	}
-
-	// Port-based sweep to catch orphans
+	// PID files can outlive their process. Only signal verified socket owners.
 	if isPortOccupied(port) {
-		killProcessOnPort(port)
+		if err := killProcessOnPort(port); err != nil {
+			return false, err
+		}
 	}
 
 	// Wait for port free
@@ -162,78 +148,33 @@ func KillRelay(port int) (bool, error) {
 }
 
 // killProcessOnPort searches /proc on Linux for the socket inode and kills the owning PID.
-func killProcessOnPort(port int) {
+func killProcessOnPort(port int) error {
 	pids, err := findPIDsListeningOnPort(port)
-	if err == nil {
-		for _, p := range pids {
-			_ = unix.Kill(p, unix.SIGKILL)
-		}
-	}
-}
-
-func findPIDsListeningOnPort(targetPort int) ([]int, error) {
-	tcpData, err := os.ReadFile("/proc/net/tcp")
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("finding owners of port %d: %w", port, err)
 	}
-
-	portHex := fmt.Sprintf("%04X", targetPort)
-	var inodes []string
-	lines := strings.Split(string(tcpData), "\n")
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) >= 10 {
-			localAddr := fields[1]
-			parts := strings.Split(localAddr, ":")
-			if len(parts) == 2 && strings.EqualFold(parts[1], portHex) {
-				state := fields[3]
-				if state == "0A" { // 0A is LISTEN state
-					inodes = append(inodes, fields[9])
-				}
-			}
+	for _, pid := range pids {
+		if err := unix.Kill(pid, unix.SIGTERM); err != nil && !errors.Is(err, unix.ESRCH) {
+			return fmt.Errorf("signalling relay pid %d: %w", pid, err)
 		}
 	}
-
-	if len(inodes) == 0 {
-		return nil, nil
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && isPortOccupied(port) {
+		time.Sleep(50 * time.Millisecond)
 	}
-
-	var matchedPIDs []int
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil, err
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 0 {
-			continue
-		}
-
-		fdDir := filepath.Join("/proc", entry.Name(), "fd")
-		fds, err := os.ReadDir(fdDir)
+	// Re-enumerate: a terminated owner may have released its port and PID.
+	if isPortOccupied(port) {
+		remaining, err := findPIDsListeningOnPort(port)
 		if err != nil {
-			continue
+			return err
 		}
-
-		for _, fd := range fds {
-			link, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
-			if err != nil {
-				continue
-			}
-			for _, inode := range inodes {
-				if strings.Contains(link, fmt.Sprintf("[%s]", inode)) {
-					matchedPIDs = append(matchedPIDs, pid)
-					break
-				}
+		for _, pid := range remaining {
+			if err := unix.Kill(pid, unix.SIGKILL); err != nil && !errors.Is(err, unix.ESRCH) {
+				return err
 			}
 		}
 	}
-
-	return matchedPIDs, nil
+	return nil
 }
 
 func acquireRestartLock(port int) bool {
@@ -297,10 +238,8 @@ func WaitForRelay(port int, timeout time.Duration, minVersion string) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		status := ProbeRelay(port)
-		if status.Kind == StatusHealthy {
-			if minVersion == "" || CompareVersions(status.Version, minVersion) >= 0 {
-				return true
-			}
+		if status.compatible(minVersion) {
+			return true
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -333,7 +272,7 @@ func SpawnRelayServer(port int) error {
 // EnsureRelayRunning ensures a healthy daemon of at least our version is running.
 func EnsureRelayRunning(port int, version string) error {
 	status := ProbeRelay(port)
-	if status.Kind == StatusHealthy && CompareVersions(status.Version, version) >= 0 {
+	if status.compatible(version) {
 		return nil
 	}
 
@@ -347,7 +286,7 @@ func EnsureRelayRunning(port int, version string) error {
 
 	// Re-probe under lock
 	current := ProbeRelay(port)
-	if current.Kind == StatusHealthy && CompareVersions(current.Version, version) >= 0 {
+	if current.compatible(version) {
 		return nil
 	}
 

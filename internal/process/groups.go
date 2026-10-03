@@ -3,34 +3,24 @@ package process
 import (
 	"errors"
 	"fmt"
-	"os"
 	"slices"
-	"strconv"
 
 	"golang.org/x/sys/unix"
 )
 
-// Groups returns all process group IDs belonging to sessionID on Linux.
+// Groups returns all process group IDs belonging to sessionID.
 func Groups(sessionID int) ([]int, error) {
 	if sessionID <= 0 {
 		return nil, fmt.Errorf("invalid session ID %d", sessionID)
 	}
 
-	entries, err := os.ReadDir("/proc")
+	pids, err := PIDs()
 	if err != nil {
-		return nil, fmt.Errorf("reading /proc: %w", err)
+		return nil, fmt.Errorf("reading process table: %w", err)
 	}
 
 	groups := make(map[int]struct{})
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 0 {
-			continue
-		}
-
+	for _, pid := range pids {
 		sid, err := unix.Getsid(pid)
 		if errors.Is(err, unix.ESRCH) {
 			continue

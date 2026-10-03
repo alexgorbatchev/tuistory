@@ -17,6 +17,10 @@ import (
 	"github.com/remorses/tuistory/internal/session"
 )
 
+// Protocol identifies the CLI wire contract, independently of release ordering.
+// TypeScript daemons use a different argv layout and must not accept Go clients.
+const Protocol = "tuistory-go/1"
+
 // SessionInfo models the JSON representation of an active session.
 type SessionInfo struct {
 	Name      string `json:"name"`
@@ -110,30 +114,39 @@ func (r *SessionRegistry) List() []SessionInfo {
 
 // EvictStaleDead cleans up dead sessions older than 24 hours.
 func (r *SessionRegistry) EvictStaleDead() {
+	r.evictStaleDead(time.Now())
+}
+
+func (r *SessionRegistry) evictStaleDead(now time.Time) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	var stale []*session.Session
 
 	const oneDay = 24 * time.Hour
-	now := time.Now()
 	for name, s := range r.sessions {
 		if s.IsDead() {
 			if exited := s.ExitedAt(); exited != nil && now.Sub(*exited) > oneDay {
-				s.Close("stale-eviction")
 				delete(r.sessions, name)
+				stale = append(stale, s)
 			}
 		}
+	}
+	r.mu.Unlock()
+	for _, s := range stale {
+		s.Close("stale-eviction")
 	}
 }
 
 // CloseAll closes every running session and empties the registry.
 func (r *SessionRegistry) CloseAll(reason string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	sessions := r.sessions
+	r.sessions = make(map[string]*session.Session)
+	r.mu.Unlock()
 
-	for _, s := range r.sessions {
+	// Closing invokes application callbacks, which may access the registry.
+	for _, s := range sessions {
 		s.Close(reason)
 	}
-	clear(r.sessions)
 }
 
 // Server handles relay daemon HTTP and WebSocket requests.
@@ -204,7 +217,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"version": s.version,
+			"version":  s.version,
+			"protocol": Protocol,
 		})
 	})
 
