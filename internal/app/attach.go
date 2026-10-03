@@ -15,6 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/remorses/tuistory/internal/relay"
+	"github.com/remorses/tuistory/internal/session"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
@@ -61,6 +62,7 @@ func RunAttach(port int, targetSession string) error {
 		return fmt.Errorf("connecting to daemon WebSocket: %w", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "detach")
+	conn.SetReadLimit(session.MaxOutputBufferBytes)
 	var workers sync.WaitGroup
 	defer func() {
 		cancel()
@@ -216,7 +218,7 @@ func (a *attachInput) flushInterrupt(ctx context.Context, conn *websocket.Conn) 
 		return nil
 	}
 	a.pendingCtrlC = false
-	return conn.Write(ctx, websocket.MessageText, []byte{0x03})
+	return conn.Write(ctx, websocket.MessageBinary, []byte{0x03})
 }
 
 func (a *attachInput) forward(ctx context.Context, conn *websocket.Conn, data []byte) (bool, error) {
@@ -226,7 +228,7 @@ func (a *attachInput) forward(ctx context.Context, conn *websocket.Conn, data []
 			continue
 		}
 		if i > start {
-			if err := conn.Write(ctx, websocket.MessageText, data[start:i]); err != nil {
+			if err := conn.Write(ctx, websocket.MessageBinary, data[start:i]); err != nil {
 				return false, err
 			}
 		}
@@ -245,7 +247,7 @@ func (a *attachInput) forward(ctx context.Context, conn *websocket.Conn, data []
 		}
 	}
 	if start < len(data) {
-		return false, conn.Write(ctx, websocket.MessageText, data[start:])
+		return false, conn.Write(ctx, websocket.MessageBinary, data[start:])
 	}
 	return false, nil
 }

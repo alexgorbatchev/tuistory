@@ -19,10 +19,12 @@ const (
 	// CursorChar is the character used to mark cursor position in snapshots.
 	CursorChar = "█"
 
+	// MaxOutputBufferBytes bounds retained terminal output and attach replay messages.
+	MaxOutputBufferBytes = 1_000_000
+
 	defaultCols       = 120
 	defaultRows       = 36
 	defaultIdleDelay  = 200 * time.Millisecond
-	maxOutputBuffer   = 1_000_000
 	killGraceDuration = 2 * time.Second
 )
 
@@ -240,7 +242,7 @@ func (s *Session) readLoop() {
 				close(s.outputChanged)
 				s.outputChanged = make(chan struct{})
 				s.outputTotalLen += len(chunk)
-				for s.outputTotalLen > maxOutputBuffer && len(s.outputChunks) > 1 {
+				for s.outputTotalLen > MaxOutputBufferBytes && len(s.outputChunks) > 1 {
 					dropped := s.outputChunks[0]
 					s.outputChunks = s.outputChunks[1:]
 					s.outputTotalLen -= len(dropped)
