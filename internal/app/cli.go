@@ -675,10 +675,10 @@ func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[stri
 			}
 
 			var xPtr, yPtr *int
-			if scrollX > 0 {
+			if cmd.Flags().Changed("x") {
 				xPtr = &scrollX
 			}
-			if scrollY > 0 {
+			if cmd.Flags().Changed("y") {
 				yPtr = &scrollY
 			}
 

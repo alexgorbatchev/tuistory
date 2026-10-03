@@ -86,6 +86,44 @@ func TestReadFollowReportsExit(t *testing.T) {
 	}
 }
 
+func TestScrollCoordinatesPreserveExplicitZero(t *testing.T) {
+	for _, tt := range []struct {
+		name, direction string
+		flags           []string
+		want            string
+	}{
+		{"default center", "up", nil, "\x1b[<64;11;4M"},
+		{"left edge", "up", []string{"--x", "0"}, "\x1b[<64;1;4M"},
+		{"top edge", "down", []string{"--y", "0"}, "\x1b[<65;11;1M"},
+		{"top left", "down", []string{"--x", "0", "--y", "0"}, "\x1b[<65;1;1M"},
+		{"explicit positive", "up", []string{"--x", "3", "--y", "2"}, "\x1b[<64;4;3M"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := relay.NewSessionRegistry()
+			defer reg.CloseAll("test-done")
+			res := ExecuteCommand([]string{"launch", "stty raw -echo; printf ready; cat", "-s", "mouse", "--cols", "20", "--rows", "6"}, reg, ".", nil)
+			if res.ExitCode != 0 {
+				t.Fatal(res.Stderr)
+			}
+			s := reg.Get("mouse")
+			s.Read() // Consume readiness output before waiting for the echoed event.
+			args := append([]string{"scroll", tt.direction, "-s", "mouse"}, tt.flags...)
+			res = ExecuteCommand(args, reg, ".", nil)
+			if res.ExitCode != 0 || res.Stdout != "OK" {
+				t.Fatalf("scroll: %+v", res)
+			}
+			deadline := time.Now().Add(time.Second)
+			for !strings.Contains(s.GetRawOutput(), tt.want) && time.Now().Before(deadline) {
+				s.WaitForUnreadOutput(time.Until(deadline))
+				s.Read()
+			}
+			if raw := s.GetRawOutput(); !strings.Contains(raw, tt.want) {
+				t.Fatalf("mouse event=%q want=%q", raw, tt.want)
+			}
+		})
+	}
+}
+
 func TestScreenshotConcurrentOutput(t *testing.T) {
 	reg := relay.NewSessionRegistry()
 	defer reg.CloseAll("test-done")
