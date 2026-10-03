@@ -1,19 +1,9 @@
 package screenshot
 
 import (
-	"bytes"
-	"fmt"
-	"image"
 	"image/color"
-	"image/draw"
-	"image/png"
 	"strconv"
 	"strings"
-
-	"github.com/gitpod-io/xterm-go"
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/basicfont"
-	"golang.org/x/image/math/fixed"
 )
 
 // Options specifies terminal screenshot rendering parameters.
@@ -92,88 +82,4 @@ func CellColor(code int, isRGB, isPalette bool, def color.RGBA) color.RGBA {
 		return color.RGBA{R: uint8(gray), G: uint8(gray), B: uint8(gray), A: 255}
 	}
 	return def
-}
-
-// RenderTerminal renders a terminal's screen buffer to PNG bytes.
-func RenderTerminal(term *xterm.Terminal, opts Options) ([]byte, error) {
-	cols := term.Cols()
-	rows := term.Rows()
-	if cols <= 0 || rows <= 0 {
-		return nil, fmt.Errorf("invalid terminal dimensions %dx%d", cols, rows)
-	}
-
-	bg := parseColor(opts.Background, color.RGBA{0x1a, 0x1b, 0x26, 0xff})
-	fg := parseColor(opts.Foreground, color.RGBA{0xc0, 0xca, 0xf5, 0xff})
-	frameBg := bg
-	if opts.FrameColor != "" {
-		frameBg = parseColor(opts.FrameColor, bg)
-	}
-
-	cellWidth := 7
-	cellHeight := 13
-
-	paddingCells := opts.Padding
-	if paddingCells < 0 {
-		paddingCells = 0
-	}
-	paddingPx := paddingCells * cellWidth
-
-	imgWidth := cols*cellWidth + paddingPx*2
-	imgHeight := rows*cellHeight + paddingPx*2
-
-	img := image.NewRGBA(image.Rect(0, 0, imgWidth, imgHeight))
-	draw.Draw(img, img.Bounds(), &image.Uniform{C: frameBg}, image.Point{}, draw.Src)
-
-	innerRect := image.Rect(paddingPx, paddingPx, paddingPx+cols*cellWidth, paddingPx+rows*cellHeight)
-	draw.Draw(img, innerRect, &image.Uniform{C: bg}, image.Point{}, draw.Src)
-
-	buf := term.Buffer()
-	face := basicfont.Face7x13
-
-	for y := 0; y < rows; y++ {
-		lineIdx := buf.YBase + y
-		if lineIdx >= buf.Lines.Length() {
-			continue
-		}
-		line := buf.Lines.Get(lineIdx)
-		if line == nil {
-			continue
-		}
-
-		for x := 0; x < cols; x++ {
-			if x >= line.Len {
-				continue
-			}
-			cell := line.LoadCell(x, xterm.NewCellData())
-
-			cellBg := CellColor(cell.GetBgColor(), cell.IsBgRGB(), cell.IsBgPalette(), bg)
-			cellFg := CellColor(cell.GetFgColor(), cell.IsFgRGB(), cell.IsFgPalette(), fg)
-
-			cellX := paddingPx + x*cellWidth
-			cellY := paddingPx + y*cellHeight
-
-			if cellBg != bg {
-				cellBox := image.Rect(cellX, cellY, cellX+cellWidth, cellY+cellHeight)
-				draw.Draw(img, cellBox, &image.Uniform{C: cellBg}, image.Point{}, draw.Src)
-			}
-
-			charStr := cell.GetChars()
-			if charStr != "" && charStr != " " {
-				d := &font.Drawer{
-					Dst:  img,
-					Src:  &image.Uniform{C: cellFg},
-					Face: face,
-					Dot:  fixed.Point26_6{X: fixed.I(cellX), Y: fixed.I(cellY + 11)}, // 11 is baseline offset for 7x13
-				}
-				d.DrawString(charStr)
-			}
-		}
-	}
-
-	var out bytes.Buffer
-	if err := png.Encode(&out, img); err != nil {
-		return nil, fmt.Errorf("encoding png: %w", err)
-	}
-
-	return out.Bytes(), nil
 }
