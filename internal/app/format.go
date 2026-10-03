@@ -1,0 +1,59 @@
+package app
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+)
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '/' || c == ':' || c == '-') {
+			return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+		}
+	}
+	return s
+}
+
+func yamlKey(key string) string {
+	return fmt.Sprintf("%s%s", ansi("36", key), ansi("90", ":"))
+}
+
+func yamlString(value string) string {
+	quote := ansi("90", "\"")
+	escaped := strings.ReplaceAll(strings.ReplaceAll(value, "\\", "\\\\"), "\"", "\\\"")
+	return fmt.Sprintf("%s%s%s", quote, ansi("32", escaped), quote)
+}
+
+func yamlNumber(value int) string {
+	return ansi("35", strconv.Itoa(value))
+}
+
+func ansi(code, val string) string {
+	return fmt.Sprintf("\x1b[%sm%s\x1b[39m", code, val)
+}
+
+func timeAgo(ts int64) string {
+	secs := int((time.Now().UnixMilli() - ts) / 1000)
+	if secs < 60 {
+		return fmt.Sprintf("%ds ago", secs)
+	}
+	mins := secs / 60
+	if mins < 60 {
+		return fmt.Sprintf("%dm ago", mins)
+	}
+	hrs := mins / 60
+	if hrs < 24 {
+		return fmt.Sprintf("%dh ago", hrs)
+	}
+	days := hrs / 24
+	return fmt.Sprintf("%dd ago", days)
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
