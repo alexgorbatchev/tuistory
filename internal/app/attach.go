@@ -3,20 +3,26 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/remorses/tuistory/internal/relay"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
-const doubleCtrlTimeout = 450 * time.Millisecond
+const (
+	doubleCtrlTimeout  = 450 * time.Millisecond
+	attachPollInterval = 25
+)
 
 // RunAttach attaches interactively to a session over WebSocket.
 func RunAttach(port int, targetSession string) error {
@@ -55,6 +61,12 @@ func RunAttach(port int, targetSession string) error {
 		return fmt.Errorf("connecting to daemon WebSocket: %w", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "detach")
+	var workers sync.WaitGroup
+	defer func() {
+		cancel()
+		_ = conn.CloseNow() // Interrupt a blocked WebSocket reader before joining workers.
+		workers.Wait()
+	}()
 
 	cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil || cols <= 0 || rows <= 0 {
@@ -85,7 +97,9 @@ func RunAttach(port int, targetSession string) error {
 	signal.Notify(sigwinch, syscall.SIGWINCH)
 	defer signal.Stop(sigwinch)
 
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		for {
 			select {
 			case <-ctx.Done():
@@ -106,8 +120,11 @@ func RunAttach(port int, targetSession string) error {
 
 	// WebSocket -> Stdout
 	doneReading := make(chan struct{})
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		defer close(doneReading)
+		defer cancel()
 		for {
 			typ, r, err := conn.Reader(ctx)
 			if err != nil {
@@ -146,10 +163,7 @@ func RunAttach(port int, targetSession string) error {
 	}()
 
 	// Stdin -> WebSocket with double Ctrl+C / Ctrl+X handling
-	var (
-		lastCtrlC time.Time
-		lastCtrlX time.Time
-	)
+	var input attachInput
 
 	inBuf := make([]byte, 256)
 	for {
@@ -161,48 +175,102 @@ func RunAttach(port int, targetSession string) error {
 		default:
 		}
 
-		n, err := os.Stdin.Read(inBuf)
+		if err := input.flushInterrupt(ctx, conn); err != nil {
+			return nil
+		}
+		ready, err := pollInput(ctx, stdinFd)
 		if err != nil {
+			return nil
+		}
+		if !ready {
+			continue
+		}
+		n, err := unix.Read(stdinFd, inBuf)
+		if err != nil {
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
 			break
 		}
 		if n == 0 {
-			continue
-		}
-
-		data := inBuf[:n]
-		if n == 1 && data[0] == 0x03 { // Ctrl+C
-			if time.Since(lastCtrlC) < doubleCtrlTimeout {
-				// Double Ctrl+C: detach
-				return nil
-			}
-			lastCtrlC = time.Now()
-			// Send first Ctrl+C after delay if no second Ctrl+C comes
-			time.AfterFunc(doubleCtrlTimeout, func() {
-				if time.Since(lastCtrlC) >= doubleCtrlTimeout {
-					_ = conn.Write(ctx, websocket.MessageText, []byte{0x03})
-				}
-			})
-			continue
-		}
-
-		if n == 1 && data[0] == 0x18 { // Ctrl+X
-			if time.Since(lastCtrlX) < doubleCtrlTimeout {
-				// Double Ctrl+X: kill process and detach
-				killMsg, _ := json.Marshal(map[string]string{"type": "kill"})
-				_ = conn.Write(ctx, websocket.MessageText, killMsg)
-				time.Sleep(100 * time.Millisecond)
-				return nil
-			}
-			lastCtrlX = time.Now()
-			continue
-		}
-
-		if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
 			break
+		}
+
+		stop, err := input.forward(ctx, conn, inBuf[:n])
+		if stop || err != nil {
+			return nil
 		}
 	}
 
 	return nil
+}
+
+// Input control state belongs to the stdin loop, including deferred interrupts.
+type attachInput struct {
+	lastCtrlC, lastCtrlX time.Time
+	pendingCtrlC         bool
+}
+
+func (a *attachInput) flushInterrupt(ctx context.Context, conn *websocket.Conn) error {
+	if !a.pendingCtrlC || time.Since(a.lastCtrlC) < doubleCtrlTimeout {
+		return nil
+	}
+	a.pendingCtrlC = false
+	return conn.Write(ctx, websocket.MessageText, []byte{0x03})
+}
+
+func (a *attachInput) forward(ctx context.Context, conn *websocket.Conn, data []byte) (bool, error) {
+	start := 0
+	for i, b := range data {
+		if b != 0x03 && b != 0x18 {
+			continue
+		}
+		if i > start {
+			if err := conn.Write(ctx, websocket.MessageText, data[start:i]); err != nil {
+				return false, err
+			}
+		}
+		start = i + 1
+		if b == 0x03 {
+			if time.Since(a.lastCtrlC) < doubleCtrlTimeout {
+				return true, nil
+			}
+			a.lastCtrlC = time.Now()
+			a.pendingCtrlC = true
+		} else {
+			if time.Since(a.lastCtrlX) < doubleCtrlTimeout {
+				return true, conn.Write(ctx, websocket.MessageText, []byte(`{"type":"kill"}`))
+			}
+			a.lastCtrlX = time.Now()
+		}
+	}
+	if start < len(data) {
+		return false, conn.Write(ctx, websocket.MessageText, data[start:])
+	}
+	return false, nil
+}
+
+// pollInput uses readiness instead of an uncancellable stdin read. Stdin remains
+// owned by the caller; cancellation never closes or changes its descriptor.
+func pollInput(ctx context.Context, fd int) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	_, err := unix.Poll(fds, attachPollInterval)
+	if errors.Is(err, unix.EINTR) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if fds[0].Revents&unix.POLLNVAL != 0 {
+		return false, unix.EBADF
+	}
+	return fds[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0, nil
 }
 
 func fetchSessions(port int) ([]relay.SessionInfo, error) {
