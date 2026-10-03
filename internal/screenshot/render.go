@@ -195,8 +195,8 @@ func renderCells(img *image.RGBA, term *xterm.Terminal, rows int, grid layout, f
 		baseline := position.Y
 		if chars := cell.GetChars(); chars != "" && chars != " " {
 			// Clip italic overhang and wide glyphs to their terminal cell span.
-			d := font.Drawer{Dst: content.SubImage(rect).(*image.RGBA), Src: image.NewUniform(cellFg), Face: face, Dot: fixed.P(position.X, position.Y)}
 			if !drawGeometry(content, cellRect, rect, chars, cellFg) {
+				d := font.Drawer{Dst: content.SubImage(rect).(*image.RGBA), Src: image.NewUniform(cellFg), Face: face, Dot: fixed.P(position.X, position.Y)}
 				d.DrawString(chars)
 			}
 		}
