@@ -73,11 +73,7 @@ type procSocketFDInfo struct {
 }
 
 func procInfo(call, pid, flavor int, arg uintptr, buffer []byte) (int, error) {
-	var ptr uintptr
-	if len(buffer) > 0 {
-		ptr = uintptr(unsafe.Pointer(unsafe.SliceData(buffer)))
-	}
-	n, _, errno := syscall.Syscall6(unix.SYS_PROC_INFO, uintptr(call), uintptr(pid), uintptr(flavor), arg, ptr, uintptr(len(buffer)))
+	n, _, errno := syscall.Syscall6(unix.SYS_PROC_INFO, uintptr(call), uintptr(pid), uintptr(flavor), arg, uintptr(unsafe.Pointer(unsafe.SliceData(buffer))), uintptr(len(buffer)))
 	runtime.KeepAlive(buffer)
 	if errno != 0 {
 		return 0, errno
