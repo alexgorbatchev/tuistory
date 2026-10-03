@@ -625,10 +625,10 @@ func (s *Session) renderTextLocked(filter *StyleFilter, trimEnd bool, showCursor
 					matches = matches && ((cell.IsUnderline() != 0) == *filter.Underline)
 				}
 				if filter.Foreground != "" {
-					matches = matches && matchesColor(filter.Foreground, screenshot.CellColor(cell.GetFgColor(), cell.IsFgRGB(), cell.IsFgPalette(), color.RGBA{R: 0xc0, G: 0xca, B: 0xf5, A: 255}))
+					matches = matches && !cell.IsFgDefault() && matchesColor(filter.Foreground, screenshot.CellColor(cell.GetFgColor(), cell.IsFgRGB(), cell.IsFgPalette(), color.RGBA{}))
 				}
 				if filter.Background != "" {
-					matches = matches && matchesColor(filter.Background, screenshot.CellColor(cell.GetBgColor(), cell.IsBgRGB(), cell.IsBgPalette(), color.RGBA{R: 0x1a, G: 0x1b, B: 0x26, A: 255}))
+					matches = matches && !cell.IsBgDefault() && matchesColor(filter.Background, screenshot.CellColor(cell.GetBgColor(), cell.IsBgRGB(), cell.IsBgPalette(), color.RGBA{}))
 				}
 				if matches {
 					sb.WriteString(charStr)

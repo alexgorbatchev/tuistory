@@ -496,6 +496,8 @@ func TestSnapshotColorFilters(t *testing.T) {
 	}{
 		{"foreground", &StyleFilter{Foreground: "#ff0000"}, "\nred"},
 		{"background", &StyleFilter{Background: "#0000ff"}, "\n          blue"},
+		{"uncolored foreground", &StyleFilter{Foreground: "#c0caf5"}, "\n"},
+		{"uncolored background", &StyleFilter{Background: "#1a1b26"}, "\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := s.Text(TextOptions{Immediate: true, TrimEnd: true, Only: tt.filter})
