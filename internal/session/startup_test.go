@@ -1,8 +1,10 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +45,19 @@ func TestDirectChildOutputSurvivesImmediateExit(t *testing.T) {
 }
 
 func TestFailedStartReleasesPTYDescriptors(t *testing.T) {
+	const helperEnv = "TUISTORY_STARTUP_DESCRIPTOR_HELPER"
+	if os.Getenv(helperEnv) != "1" {
+		// Other tests close sessions asynchronously, which opens process-table
+		// descriptors. Measure only this subprocess's owned startup attempts.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFailedStartReleasesPTYDescriptors$")
+		cmd.Env = append(os.Environ(), helperEnv+"=1")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("isolated descriptor probe: %v (context: %v)\n%s", err, ctx.Err(), output)
+		}
+		return
+	}
 	opts := []LaunchOptions{
 		{Command: "/nonexistent-startup-command"},
 		{Command: "echo", Cwd: "/nonexistent-startup-directory"},
