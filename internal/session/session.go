@@ -172,7 +172,12 @@ func New(opts LaunchOptions) (*Session, error) {
 	}
 	cmdEnv = append(cmdEnv, "TERM=xterm-truecolor", "COLORTERM=truecolor", "TERMCAST_DB_SUFFIX="+termcastSuffix)
 
-	cmd := exec.Command(opts.Command, opts.Args...)
+	commandPath, err := resolveCommand(opts.Command, targetCwd, envMap)
+	if err != nil {
+		return nil, fmt.Errorf("resolving command: %w", err)
+	}
+	cmd := exec.Command(commandPath, opts.Args...)
+	cmd.Args[0] = opts.Command
 	cmd.Dir = targetCwd
 	cmd.Env = cmdEnv
 
