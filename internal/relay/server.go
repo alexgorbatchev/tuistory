@@ -236,7 +236,11 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 					})
 
 					// Forward exit notification
-					unsubExit = attachedSession.OnExit(func(info session.ExitInfo) {
+					sess := attachedSession
+					unsubExit = sess.OnExit(func(info session.ExitInfo) {
+						if sess.IsClosed() {
+							return
+						}
 						exitMsg, _ := json.Marshal(map[string]any{
 							"type":     "exit",
 							"exitCode": info.ExitCode,
