@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -131,7 +132,7 @@ func TestSessionKillProcessGroup(t *testing.T) {
 	// Spawns a grandchild process that would normally be orphaned
 	s, err := New(LaunchOptions{
 		Command: "sh",
-		Args:    []string{"-c", "trap '' HUP TERM; sleep 60 & echo GCPID=$!; wait"},
+		Args:    []string{"-c", "trap '' HUP; sleep 60 & child=$!; trap 'wait \"$child\"; exit' TERM; echo GCPID=$child; wait"},
 		Cols:    40,
 		Rows:    10,
 	})
@@ -177,6 +178,10 @@ func TestSessionKillProcessGroup(t *testing.T) {
 		s.Close("cleanup")
 		t.Fatalf("FindProcess error: %v", err)
 	}
+	if err := p.Signal(syscall.Signal(0)); err != nil {
+		s.Close("cleanup")
+		t.Fatalf("grandchild must be alive before Close: %v", err)
+	}
 
 	s.Close("test-done")
 
@@ -184,7 +189,7 @@ func TestSessionKillProcessGroup(t *testing.T) {
 	alive := true
 	for i := 0; i < 40; i++ {
 		time.Sleep(100 * time.Millisecond)
-		err := p.Signal(os.Signal(syscallSignal(0)))
+		err := p.Signal(syscall.Signal(0))
 		if err != nil {
 			alive = false
 			break
@@ -195,12 +200,3 @@ func TestSessionKillProcessGroup(t *testing.T) {
 		t.Fatalf("grandchild process %d still alive after session.Close()", grandchildPid)
 	}
 }
-
-func syscallSignal(n int) os.Signal {
-	return os.Signal(syscallSig(n))
-}
-
-type syscallSig int
-
-func (s syscallSig) String() string { return "signal" }
-func (s syscallSig) Signal()        {}

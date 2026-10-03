@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,6 +20,7 @@ import (
 	"github.com/gitpod-io/xterm-go"
 	"github.com/remorses/tuistory/internal/keys"
 	"github.com/remorses/tuistory/internal/process"
+	"github.com/remorses/tuistory/internal/screenshot"
 	"golang.org/x/sys/unix"
 )
 
@@ -79,15 +82,15 @@ type Session struct {
 	cmd  *exec.Cmd
 	term *xterm.Terminal
 
-	cols      int
-	rows      int
-	cwd       string
-	command   string
-	env       map[string]string
-	idleDelay time.Duration
+	cols       int
+	rows       int
+	cwd        string
+	command    string
+	env        map[string]string
+	idleDelay  time.Duration
 	showCursor bool
-	startedAt time.Time
-	exitedAt  *time.Time
+	startedAt  time.Time
+	exitedAt   *time.Time
 
 	isDead   bool
 	exitInfo *ExitInfo
@@ -97,10 +100,12 @@ type Session struct {
 	dataWaiters     []chan struct{}
 	idleWaiters     []chan struct{}
 	idleTimer       *time.Timer
+	idleGeneration  uint64
 
 	outputChunks    []string
 	outputTotalLen  int
 	outputReadIndex int
+	outputChanged   chan struct{}
 
 	subscribers      map[int]chan string
 	nextSubscriberID int
@@ -199,6 +204,7 @@ func New(opts LaunchOptions) (*Session, error) {
 		idleDelay:        idleDelay,
 		showCursor:       opts.ShowCursor,
 		startedAt:        time.Now(),
+		outputChanged:    make(chan struct{}),
 		subscribers:      make(map[int]chan string),
 		termcastDbSuffix: generatedTermcastSuffix,
 	}
@@ -220,6 +226,8 @@ func (s *Session) readLoop() {
 				_, _ = s.term.Write(buf[:n])
 
 				s.outputChunks = append(s.outputChunks, chunk)
+				close(s.outputChanged)
+				s.outputChanged = make(chan struct{})
 				s.outputTotalLen += len(chunk)
 				for s.outputTotalLen > maxOutputBuffer && len(s.outputChunks) > 1 {
 					dropped := s.outputChunks[0]
@@ -248,12 +256,15 @@ func (s *Session) readLoop() {
 				if s.idleTimer != nil {
 					s.idleTimer.Stop()
 				}
+				s.idleGeneration++
+				generation := s.idleGeneration
 				s.idleTimer = time.AfterFunc(s.idleDelay, func() {
 					s.mu.Lock()
 					defer s.mu.Unlock()
-					if s.closed {
+					if s.closed || s.idleGeneration != generation {
 						return
 					}
+					s.idleTimer = nil
 					for _, ch := range s.idleWaiters {
 						close(ch)
 					}
@@ -276,11 +287,12 @@ func (s *Session) waitLoop() {
 	err := s.cmd.Wait()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	now := time.Now()
 	s.exitedAt = &now
 	s.isDead = true
+	close(s.outputChanged)
+	s.outputChanged = make(chan struct{})
 
 	exitCode := 0
 	signal := 0
@@ -308,10 +320,12 @@ func (s *Session) waitLoop() {
 	}
 	s.idleWaiters = nil
 
-	for _, fn := range s.exitListeners {
+	listeners := s.exitListeners
+	s.exitListeners = nil
+	s.mu.Unlock()
+	for _, fn := range listeners {
 		fn(info)
 	}
-	s.exitListeners = nil
 }
 
 // IsDead returns whether the child process has exited.
@@ -389,8 +403,9 @@ func (s *Session) WaitForData(timeout time.Duration) error {
 		return nil
 	}
 	if s.isDead || s.closed {
+		info := s.exitInfo
 		s.mu.Unlock()
-		return errors.New("waitForData failed: process already exited without producing data")
+		return formatExitError(info, "")
 	}
 
 	ch := make(chan struct{})
@@ -399,8 +414,16 @@ func (s *Session) WaitForData(timeout time.Duration) error {
 
 	select {
 	case <-ch:
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		if !s.hasReceivedData {
+			return formatExitError(s.exitInfo, "")
+		}
 		return nil
 	case <-time.After(timeout):
+		s.mu.Lock()
+		s.dataWaiters = slices.DeleteFunc(s.dataWaiters, func(waiter chan struct{}) bool { return waiter == ch })
+		s.mu.Unlock()
 		return fmt.Errorf("waitForData timed out after %v - no data received from PTY", timeout)
 	}
 }
@@ -422,6 +445,9 @@ func (s *Session) WaitIdle(timeout time.Duration) error {
 	case <-ch:
 		return nil
 	case <-time.After(timeout):
+		s.mu.Lock()
+		s.idleWaiters = slices.DeleteFunc(s.idleWaiters, func(waiter chan struct{}) bool { return waiter == ch })
+		s.mu.Unlock()
 		return nil
 	}
 }
@@ -536,11 +562,11 @@ func (s *Session) renderTextLocked(filter *StyleFilter, trimEnd bool, showCursor
 	cursorY := s.term.CursorY()
 	cursorVisible := !s.term.IsCursorHidden()
 
-	rows := s.term.Rows()
+	rows := buf.Lines.Length()
 	lines := make([]string, rows)
 
 	for y := 0; y < rows; y++ {
-		lineIdx := buf.YBase + y
+		lineIdx := y
 		if lineIdx >= buf.Lines.Length() {
 			lines[y] = ""
 			continue
@@ -560,9 +586,19 @@ func (s *Session) renderTextLocked(filter *StyleFilter, trimEnd bool, showCursor
 			}
 
 			cell := line.LoadCell(x, xterm.NewCellData())
+			if cell.GetWidth() == 0 {
+				continue
+			}
 			charStr := cell.GetChars()
 			if charStr == "" {
 				charStr = " "
+			}
+			if showCursor && cursorVisible && y == buf.YBase+cursorY && x == cursorX {
+				sb.WriteString(CursorChar)
+				if cell.GetWidth() > 1 {
+					sb.WriteString(strings.Repeat(" ", cell.GetWidth()-1))
+				}
+				continue
 			}
 
 			if filter != nil {
@@ -576,6 +612,12 @@ func (s *Session) renderTextLocked(filter *StyleFilter, trimEnd bool, showCursor
 				if filter.Underline != nil {
 					matches = matches && ((cell.IsUnderline() != 0) == *filter.Underline)
 				}
+				if filter.Foreground != "" {
+					matches = matches && matchesColor(filter.Foreground, screenshot.CellColor(cell.GetFgColor(), cell.IsFgRGB(), cell.IsFgPalette(), color.RGBA{R: 0xc0, G: 0xca, B: 0xf5, A: 255}))
+				}
+				if filter.Background != "" {
+					matches = matches && matchesColor(filter.Background, screenshot.CellColor(cell.GetBgColor(), cell.IsBgRGB(), cell.IsBgPalette(), color.RGBA{R: 0x1a, G: 0x1b, B: 0x26, A: 255}))
+				}
 				if matches {
 					sb.WriteString(charStr)
 				} else {
@@ -587,9 +629,6 @@ func (s *Session) renderTextLocked(filter *StyleFilter, trimEnd bool, showCursor
 		}
 
 		lineStr := sb.String()
-		if showCursor && cursorVisible && y == cursorY && cursorX >= 0 && cursorX < len(lineStr) {
-			lineStr = lineStr[:cursorX] + CursorChar + lineStr[cursorX+1:]
-		}
 
 		lines[y] = strings.TrimRight(lineStr, " \t\r")
 	}
@@ -679,6 +718,25 @@ func (s *Session) HasUnreadOutput() bool {
 	return s.outputReadIndex < len(s.outputChunks)
 }
 
+// WaitForUnreadOutput blocks until new output, process exit, closing, or timeout.
+func (s *Session) WaitForUnreadOutput(timeout time.Duration) bool {
+	s.mu.RLock()
+	if s.outputReadIndex < len(s.outputChunks) || s.isDead || s.closed {
+		unread := s.outputReadIndex < len(s.outputChunks)
+		s.mu.RUnlock()
+		return unread
+	}
+	changed := s.outputChanged
+	s.mu.RUnlock()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-changed:
+	case <-timer.C:
+	}
+	return s.HasUnreadOutput()
+}
+
 // GetRawOutput returns the full buffered output with ANSI escape codes intact.
 func (s *Session) GetRawOutput() string {
 	s.mu.RLock()
@@ -691,6 +749,17 @@ func (s *Session) Terminal() *xterm.Terminal {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.term
+}
+
+// RenderScreenshot holds the session lock throughout terminal buffer reads.
+func (s *Session) RenderScreenshot(opts screenshot.Options) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return screenshot.RenderTerminal(s.term, opts)
+}
+
+func matchesColor(raw string, c color.RGBA) bool {
+	return strings.EqualFold(raw, fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B))
 }
 
 // Resize updates the terminal dimensions and notifies the PTY and emulator.
@@ -772,7 +841,7 @@ func (s *Session) Click(pattern string, first bool, timeout time.Duration) error
 			lineStr := line.TranslateToString(true, 0, s.cols)
 			locs := re.FindAllStringIndex(lineStr, -1)
 			for _, loc := range locs {
-				matches = append(matches, [2]int{loc[0], y})
+				matches = append(matches, [2]int{columnAtByte(line, loc[0]), y})
 			}
 		}
 		s.mu.RUnlock()
@@ -790,10 +859,34 @@ func (s *Session) Click(pattern string, first bool, timeout time.Duration) error
 	return fmt.Errorf("click(%q) timed out after %v - pattern not found", pattern, timeout)
 }
 
+func columnAtByte(line *xterm.BufferLine, index int) int {
+	offset := 0
+	for x := 0; x < line.Len; x++ {
+		cell := line.LoadCell(x, xterm.NewCellData())
+		if cell.GetWidth() == 0 {
+			continue
+		}
+		if offset >= index {
+			return x
+		}
+		chars := cell.GetChars()
+		if chars == "" {
+			chars = " "
+		}
+		offset += len(chars)
+		if offset > index {
+			return x
+		}
+	}
+	return line.Len
+}
+
 // ScrollUp sends SGR mouse scroll up events.
 func (s *Session) ScrollUp(lines int, x, y *int) error {
+	s.mu.RLock()
 	col := s.cols / 2
 	row := s.rows / 2
+	s.mu.RUnlock()
 	if x != nil {
 		col = *x
 	}
@@ -806,8 +899,10 @@ func (s *Session) ScrollUp(lines int, x, y *int) error {
 
 // ScrollDown sends SGR mouse scroll down events.
 func (s *Session) ScrollDown(lines int, x, y *int) error {
+	s.mu.RLock()
 	col := s.cols / 2
 	row := s.rows / 2
+	s.mu.RUnlock()
 	if x != nil {
 		col = *x
 	}
@@ -871,8 +966,10 @@ func (s *Session) Subscribe(cb func(string)) func() {
 		cancel()
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		delete(s.subscribers, id)
-		close(ch)
+		if current, ok := s.subscribers[id]; ok {
+			delete(s.subscribers, id)
+			close(current)
+		}
 	}
 }
 
@@ -927,10 +1024,10 @@ func (s *Session) Close(reason string) {
 		return
 	}
 	s.closed = true
+	close(s.outputChanged)
+	s.outputChanged = make(chan struct{})
 
-	for _, fn := range s.closeListeners {
-		fn(reason)
-	}
+	listeners := s.closeListeners
 	s.closeListeners = nil
 
 	for _, sub := range s.subscribers {
@@ -958,6 +1055,9 @@ func (s *Session) Close(reason string) {
 	termcastSuffix := s.termcastDbSuffix
 	cwd := s.cwd
 	s.mu.Unlock()
+	for _, fn := range listeners {
+		fn(reason)
+	}
 
 	if ptmx != nil {
 		_ = ptmx.Close()
