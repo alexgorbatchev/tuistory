@@ -14,7 +14,7 @@ func TestCellColor(t *testing.T) {
 		want         color.RGBA
 	}{
 		{"RGB", 0x123456, true, false, color.RGBA{18, 52, 86, 255}},
-		{"ANSI red", 1, false, true, color.RGBA{205, 49, 49, 255}},
+		{"ANSI red", 1, false, true, color.RGBA{204, 102, 102, 255}},
 		{"cube blue", 17, false, true, color.RGBA{0, 0, 95, 255}},
 		{"cube white", 231, false, true, color.RGBA{255, 255, 255, 255}},
 		{"gray", 233, false, true, color.RGBA{18, 18, 18, 255}},

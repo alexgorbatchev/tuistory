@@ -172,7 +172,7 @@ func TestScreenshotColors(t *testing.T) {
 		{"rgb", "\x1b[48;2;18;52;86m ", Options{}, color.RGBA{18, 52, 86, 255}},
 		{"cube", "\x1b[48;5;17m ", Options{}, color.RGBA{0, 0, 95, 255}},
 		{"gray", "\x1b[48;5;233m ", Options{}, color.RGBA{18, 18, 18, 255}},
-		{"ansi", "\x1b[41m ", Options{}, color.RGBA{205, 49, 49, 255}},
+		{"ansi", "\x1b[41m ", Options{}, color.RGBA{204, 102, 102, 255}},
 		{"inverse", "\x1b[7m ", Options{Foreground: "#123456"}, color.RGBA{18, 52, 86, 255}},
 		{"theme", "M", Options{Background: " #abc "}, color.RGBA{170, 187, 204, 255}},
 		{"invalid theme", "M", Options{Background: "#gggggg"}, color.RGBA{26, 27, 38, 255}},
