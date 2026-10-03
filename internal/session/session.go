@@ -1031,7 +1031,7 @@ func (s *Session) KillProcess() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.cmd != nil && s.cmd.Process != nil && !s.isDead {
+	if s.cmd != nil && s.cmd.Process != nil {
 		process.KillSessionGroups(s.cmd.Process.Pid, unix.SIGTERM)
 	}
 }
@@ -1127,7 +1127,6 @@ func (s *Session) Close(reason string) {
 
 	cmd := s.cmd
 	ptmx := s.ptmx
-	isDead := s.isDead
 	termcastSuffix := s.termcastDbSuffix
 	cwd := s.cwd
 	s.mu.Unlock()
@@ -1139,7 +1138,7 @@ func (s *Session) Close(reason string) {
 		_ = ptmx.Close()
 	}
 
-	if cmd != nil && cmd.Process != nil && !isDead {
+	if cmd != nil && cmd.Process != nil {
 		pid := cmd.Process.Pid
 		process.KillSessionGroups(pid, unix.SIGTERM)
 		time.AfterFunc(killGraceDuration, func() {
