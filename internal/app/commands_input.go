@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -152,9 +153,10 @@ func (o *scrollOptions) run(c *commandContext, cmd *cobra.Command, args []string
 	count := 1
 	if len(args) > 1 {
 		value, err := strconv.Atoi(args[1])
-		if err == nil && value > 0 {
-			count = value
+		if err != nil {
+			return fmt.Errorf("invalid scroll lines %q: %w", args[1], err)
 		}
+		count = value
 	}
 	x, y, err := o.coordinates(cmd)
 	if err != nil {
@@ -220,6 +222,7 @@ func newResizeCommand(c *commandContext) *cobra.Command {
 }
 
 func newCaptureFramesCommand(c *commandContext) *cobra.Command {
+	const maxInterval = math.MaxInt64 / int64(time.Millisecond)
 	var (
 		framesSession  string
 		framesCount    int
@@ -239,6 +242,9 @@ func newCaptureFramesCommand(c *commandContext) *cobra.Command {
 				return err
 			}
 
+			if framesInterval < 0 || int64(framesInterval) > maxInterval {
+				return fmt.Errorf("interval must be between 0 and %d milliseconds, got %d", maxInterval, framesInterval)
+			}
 			frames, err := s.CaptureFrames(args, framesCount, time.Duration(framesInterval)*time.Millisecond)
 			if err != nil {
 				return err

@@ -12,6 +12,8 @@ import (
 	"github.com/remorses/tuistory/internal/keys"
 )
 
+var errCaptureClosed = errors.New("cannot captureFrames: session is closed")
+
 // WriteRaw writes raw bytes directly to the PTY.
 func (s *Session) WriteRaw(data string) error {
 	s.mu.RLock()
@@ -55,19 +57,23 @@ func (s *Session) Press(keyTokens []string) error {
 
 // Resize updates the terminal dimensions and notifies the PTY and emulator.
 func (s *Session) Resize(cols, rows int) error {
+	if err := validateDimensions(cols, rows); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.cols = cols
-	s.rows = rows
-	s.term.Resize(cols, rows)
-
 	if s.ptmx != nil && !s.closed && !s.isDead {
-		return pty.Setsize(s.ptmx, &pty.Winsize{
+		if err := pty.Setsize(s.ptmx, &pty.Winsize{
 			Rows: uint16(rows),
 			Cols: uint16(cols),
-		})
+		}); err != nil {
+			return fmt.Errorf("resizing pty: %w", err)
+		}
 	}
+	s.term.Resize(cols, rows)
+	s.cols = cols
+	s.rows = rows
 	return nil
 }
 
@@ -174,22 +180,20 @@ func columnAtByte(line *xterm.BufferLine, index int) int {
 
 // ScrollUp sends SGR mouse scroll up events.
 func (s *Session) ScrollUp(lines int, x, y *int) error {
-	s.mu.RLock()
-	col := s.cols / 2
-	row := s.rows / 2
-	s.mu.RUnlock()
-	if x != nil {
-		col = *x
-	}
-	if y != nil {
-		row = *y
-	}
-	event := fmt.Sprintf("\x1b[<64;%d;%dM", col+1, row+1)
-	return s.WriteRaw(strings.Repeat(event, lines))
+	const scrollUpButton = 64
+	return s.scroll(lines, x, y, scrollUpButton)
 }
 
 // ScrollDown sends SGR mouse scroll down events.
 func (s *Session) ScrollDown(lines int, x, y *int) error {
+	const scrollDownButton = 65
+	return s.scroll(lines, x, y, scrollDownButton)
+}
+
+func (s *Session) scroll(lines int, x, y *int, button int) error {
+	if lines < 0 {
+		return fmt.Errorf("lines must be nonnegative, got %d", lines)
+	}
 	s.mu.RLock()
 	col := s.cols / 2
 	row := s.rows / 2
@@ -200,12 +204,29 @@ func (s *Session) ScrollDown(lines int, x, y *int) error {
 	if y != nil {
 		row = *y
 	}
-	event := fmt.Sprintf("\x1b[<65;%d;%dM", col+1, row+1)
-	return s.WriteRaw(strings.Repeat(event, lines))
+	event := fmt.Sprintf("\x1b[<%d;%d;%dM", button, col+1, row+1)
+	if lines == 0 {
+		return s.WriteRaw("")
+	}
+	for range lines {
+		if err := s.WriteRaw(event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CaptureFrames sends keys and captures frameCount frames separated by interval.
 func (s *Session) CaptureFrames(keyTokens []string, count int, interval time.Duration) ([]string, error) {
+	if count <= 0 {
+		return nil, fmt.Errorf("count must be positive, got %d", count)
+	}
+	if interval < 0 {
+		return nil, fmt.Errorf("interval must be nonnegative, got %v", interval)
+	}
+	closing := make(chan struct{})
+	unsubscribe := s.OnClosing(func(string) { close(closing) })
+	defer unsubscribe()
 	code := keys.GetKeyCode(keyTokens)
 	if code != "" {
 		if err := s.WriteRaw(code); err != nil {
@@ -213,17 +234,37 @@ func (s *Session) CaptureFrames(keyTokens []string, count int, interval time.Dur
 		}
 	}
 
-	frames := make([]string, count)
+	var frames []string
 	for i := 0; i < count; i++ {
+		delay := interval
+		if i == 0 {
+			delay = 0
+		}
+		if err := waitCaptureInterval(delay, closing); err != nil {
+			return nil, err
+		}
 		txt, err := s.Text(TextOptions{Immediate: true})
 		if err != nil {
 			return nil, err
 		}
-		frames[i] = txt
-		if i < count-1 {
-			time.Sleep(interval)
-		}
+		frames = append(frames, txt)
 	}
 	_ = s.WaitIdle(s.idleDelay)
 	return frames, nil
+}
+
+func waitCaptureInterval(interval time.Duration, closing <-chan struct{}) error {
+	select {
+	case <-closing:
+		return errCaptureClosed
+	default:
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-closing:
+		return errCaptureClosed
+	case <-timer.C:
+		return nil
+	}
 }
