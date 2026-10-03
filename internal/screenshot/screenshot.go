@@ -67,7 +67,8 @@ func parseColor(raw string, fallback color.RGBA) color.RGBA {
 	return fallback
 }
 
-func getCellColor(code int, isRGB, isPalette bool, def color.RGBA) color.RGBA {
+// CellColor resolves a terminal color using its RGB or indexed color mode.
+func CellColor(code int, isRGB, isPalette bool, def color.RGBA) color.RGBA {
 	if isRGB && code >= 0 {
 		return color.RGBA{
 			R: uint8(code >> 16),
@@ -82,10 +83,8 @@ func getCellColor(code int, isRGB, isPalette bool, def color.RGBA) color.RGBA {
 	if isPalette && code >= 16 && code <= 231 {
 		// 6x6x6 color cube
 		c := code - 16
-		b := (c % 6) * 51
-		g := ((c / 6) % 6) * 51
-		r := (c / 36) * 51
-		return color.RGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: 255}
+		levels := [...]uint8{0, 95, 135, 175, 215, 255}
+		return color.RGBA{R: levels[c/36], G: levels[(c/6)%6], B: levels[c%6], A: 255}
 	}
 	if isPalette && code >= 232 && code <= 255 {
 		// Grayscale ramp
@@ -147,8 +146,8 @@ func RenderTerminal(term *xterm.Terminal, opts Options) ([]byte, error) {
 			}
 			cell := line.LoadCell(x, xterm.NewCellData())
 
-			cellBg := getCellColor(cell.GetBgColor(), cell.IsBgRGB(), cell.IsBgPalette(), bg)
-			cellFg := getCellColor(cell.GetFgColor(), cell.IsFgRGB(), cell.IsFgPalette(), fg)
+			cellBg := CellColor(cell.GetBgColor(), cell.IsBgRGB(), cell.IsBgPalette(), bg)
+			cellFg := CellColor(cell.GetFgColor(), cell.IsFgRGB(), cell.IsFgPalette(), fg)
 
 			cellX := paddingPx + x*cellWidth
 			cellY := paddingPx + y*cellHeight
