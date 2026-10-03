@@ -163,6 +163,9 @@ func RenderTerminal(term *xterm.Terminal, opts Options) ([]byte, error) {
 	if opts.FrameColor != "" {
 		frame = parseColor(opts.FrameColor, bg)
 	}
+	if err := validateRasterBounds(term, rows, grid, faces); err != nil {
+		return nil, err
+	}
 	img := image.NewRGBA(image.Rect(0, 0, grid.width, grid.height))
 	draw.Draw(img, img.Bounds(), image.NewUniform(frame), image.Point{}, draw.Src)
 	draw.Draw(img, grid.contentRect(), image.NewUniform(bg), image.Point{}, draw.Src)
@@ -176,6 +179,41 @@ func RenderTerminal(term *xterm.Terminal, opts Options) ([]byte, error) {
 
 func renderCells(img *image.RGBA, term *xterm.Terminal, rows int, grid layout, faces fontFaces, bg, fg color.RGBA) {
 	content := img.SubImage(grid.contentRect()).(*image.RGBA)
+	_ = forEachCell(term, rows, func(x, y int, cell *xterm.CellData) error {
+		cellRect := grid.cellRect(x, y, max(1, cell.GetWidth()))
+		rect := cellRect.Intersect(content.Bounds())
+		if rect.Empty() {
+			return nil
+		}
+		cellBg, cellFg := colors(cell, bg, fg)
+		if cell.IsDim() != 0 {
+			cellFg = color.RGBA{uint8((uint16(cellFg.R) + uint16(cellBg.R)) / 2), uint8((uint16(cellFg.G) + uint16(cellBg.G)) / 2), uint8((uint16(cellFg.B) + uint16(cellBg.B)) / 2), 255}
+		}
+		draw.Draw(img, rect, image.NewUniform(cellBg), image.Point{}, draw.Src)
+		face, dot := cellFont(faces, cell, cellRect)
+		metrics := face.Metrics()
+		baseline := dot.Y.Floor()
+		if chars := cell.GetChars(); chars != "" && chars != " " {
+			// Clip italic overhang and wide glyphs to their terminal cell span.
+			d := font.Drawer{Dst: content.SubImage(rect).(*image.RGBA), Src: image.NewUniform(cellFg), Face: face, Dot: dot}
+			if !drawGeometry(content, cellRect, rect, chars, cellFg) {
+				d.DrawString(chars)
+			}
+		}
+		if cell.IsUnderline() != 0 {
+			underline := image.Rect(rect.Min.X, baseline+1, rect.Max.X, baseline+1+max(1, int(math.Round(grid.ratio)))).Intersect(rect)
+			draw.Draw(img, underline, image.NewUniform(cellFg), image.Point{}, draw.Src)
+		}
+		if cell.IsStrikethrough() != 0 {
+			y := baseline - metrics.XHeight.Ceil()/2
+			strike := image.Rect(rect.Min.X, y, rect.Max.X, y+max(1, int(math.Round(grid.ratio)))).Intersect(rect)
+			draw.Draw(img, strike, image.NewUniform(cellFg), image.Point{}, draw.Src)
+		}
+		return nil
+	}) // Rendering is infallible after preflight; this callback never returns an error.
+}
+
+func forEachCell(term *xterm.Terminal, rows int, visit func(int, int, *xterm.CellData) error) error {
 	buf := term.Buffer()
 	for y := 0; y < rows; y++ {
 		line := buf.Lines.Get(y)
@@ -187,38 +225,56 @@ func renderCells(img *image.RGBA, term *xterm.Terminal, rows int, grid layout, f
 			if cell.GetWidth() == 0 {
 				continue
 			}
-			cellRect := grid.cellRect(x, y, max(1, cell.GetWidth()))
-			rect := cellRect.Intersect(content.Bounds())
-			if rect.Empty() {
-				continue
-			}
-			cellBg, cellFg := colors(cell, bg, fg)
-			if cell.IsDim() != 0 {
-				cellFg = color.RGBA{uint8((uint16(cellFg.R) + uint16(cellBg.R)) / 2), uint8((uint16(cellFg.G) + uint16(cellBg.G)) / 2), uint8((uint16(cellFg.B) + uint16(cellBg.B)) / 2), 255}
-			}
-			draw.Draw(img, rect, image.NewUniform(cellBg), image.Point{}, draw.Src)
-			r, _ := utf8.DecodeRuneInString(cell.GetChars())
-			face := faces.selectFace(cell.IsBold() != 0, cell.IsItalic() != 0, r)
-			metrics := face.Metrics()
-			baseline := cellRect.Min.Y + (cellRect.Dy()-metrics.Ascent.Ceil()-metrics.Descent.Ceil())/2 + metrics.Ascent.Ceil()
-			if chars := cell.GetChars(); chars != "" && chars != " " {
-				// Clip italic overhang and wide glyphs to their terminal cell span.
-				d := font.Drawer{Dst: content.SubImage(rect).(*image.RGBA), Src: image.NewUniform(cellFg), Face: face, Dot: fixed.P(cellRect.Min.X, baseline)}
-				if !drawGeometry(content, cellRect, rect, chars, cellFg) {
-					d.DrawString(chars)
-				}
-			}
-			if cell.IsUnderline() != 0 {
-				underline := image.Rect(rect.Min.X, baseline+1, rect.Max.X, baseline+1+max(1, int(math.Round(grid.ratio)))).Intersect(rect)
-				draw.Draw(img, underline, image.NewUniform(cellFg), image.Point{}, draw.Src)
-			}
-			if cell.IsStrikethrough() != 0 {
-				y := baseline - metrics.XHeight.Ceil()/2
-				strike := image.Rect(rect.Min.X, y, rect.Max.X, y+max(1, int(math.Round(grid.ratio)))).Intersect(rect)
-				draw.Draw(img, strike, image.NewUniform(cellFg), image.Point{}, draw.Src)
+			if err := visit(x, y, cell); err != nil {
+				return err
 			}
 		}
 	}
+	return nil
+}
+
+func validateRasterBounds(term *xterm.Terminal, rows int, grid layout, faces fontFaces) error {
+	return forEachCell(term, rows, func(x, y int, cell *xterm.CellData) error {
+		chars := cell.GetChars()
+		rect := grid.cellRect(x, y, max(1, cell.GetWidth()))
+		if rect.Intersect(grid.contentRect()).Empty() || chars == "" || chars == " " {
+			return nil
+		}
+		if isGeometry(chars) {
+			if !rasterWithinLimit(rect.Dx(), rect.Dy()) {
+				return fmt.Errorf("terminal geometry raster exceeds rendering limits")
+			}
+			return nil
+		}
+		face, dot := cellFont(faces, cell, rect)
+		prev := rune(-1)
+		for _, r := range chars {
+			if prev >= 0 {
+				dot.X += face.Kern(prev, r)
+			}
+			bounds, advance, _ := face.GlyphBounds(r)
+			bounds = bounds.Add(dot)
+			width, height := bounds.Max.X.Ceil()-bounds.Min.X.Floor(), bounds.Max.Y.Ceil()-bounds.Min.Y.Floor()
+			if !rasterWithinLimit(width, height) {
+				return fmt.Errorf("terminal glyph raster exceeds rendering limits")
+			}
+			dot.X += advance
+			prev = r
+		}
+		return nil
+	})
+}
+
+func cellFont(faces fontFaces, cell *xterm.CellData, rect image.Rectangle) (font.Face, fixed.Point26_6) {
+	r, _ := utf8.DecodeRuneInString(cell.GetChars())
+	face := faces.selectFace(cell.IsBold() != 0, cell.IsItalic() != 0, r)
+	metrics := face.Metrics()
+	baseline := rect.Min.Y + (rect.Dy()-metrics.Ascent.Ceil()-metrics.Descent.Ceil())/2 + metrics.Ascent.Ceil()
+	return face, fixed.P(rect.Min.X, baseline)
+}
+
+func rasterWithinLimit(width, height int) bool {
+	return width >= 0 && height >= 0 && float64(width)*float64(height) <= maxImagePixels
 }
 
 func drawGeometry(img *image.RGBA, cellRect, clip image.Rectangle, chars string, fg color.RGBA) bool {

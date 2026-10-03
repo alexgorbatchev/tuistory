@@ -191,6 +191,64 @@ func TestScreenshotExplicitWidthCropsGeometry(t *testing.T) {
 	}
 }
 
+func TestScreenshotNativeRasterPreflight(t *testing.T) {
+	for _, tt := range []struct {
+		name, text string
+		opts       Options
+	}{
+		{"glyph", "M", Options{FontSize: 20000, Width: 1, LineHeight: 0.000001}},
+		{"geometry", "", Options{FontSize: 20000, Width: 1, LineHeight: 1.5}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			term := xterm.New(xterm.WithCols(1), xterm.WithRows(1))
+			term.WriteString(tt.text)
+			grid, err := newLayout(1, 1, tt.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			faces, err := loadFaces(float64(tt.opts.FontSize))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer faces.close()
+			// This exercises production preflight without allocating any glyph mask.
+			if err := validateRasterBounds(term, 1, grid, faces); err == nil {
+				t.Fatal("native raster above the pixel cap was accepted")
+			}
+		})
+	}
+}
+
+func TestScreenshotNativeRasterLimitsAtRenderBoundary(t *testing.T) {
+	for _, tt := range []struct {
+		text string
+		opts Options
+	}{
+		{"M", Options{FontSize: 20000, Width: 1, LineHeight: 0.000001}},
+		{"", Options{FontSize: 20000, Width: 1, LineHeight: 1.5}},
+	} {
+		term := xterm.New(xterm.WithCols(1), xterm.WithRows(1))
+		term.WriteString(tt.text)
+		if _, err := RenderTerminal(term, tt.opts); err == nil {
+			t.Fatal("oversized native raster reached rendering")
+		}
+	}
+	img := renderImage(t, "M", Options{FontSize: 500, Width: 100, LineHeight: 0.002, Background: "#000", Foreground: "#fff"})
+	if img.Bounds().Dx() != 100 || img.Bounds().Dy() != 1 {
+		t.Fatalf("valid crop dimensions=%v", img.Bounds())
+	}
+	visible := false
+	for x := 0; x < 100; x++ {
+		r, _, _, _ := img.At(x, 0).RGBA()
+		if r > 0 {
+			visible = true
+		}
+	}
+	if !visible {
+		t.Fatal("valid native glyph crop was blank")
+	}
+}
+
 func TestScreenshotWideCellBackground(t *testing.T) {
 	img := renderImage(t, "\x1b[48;2;18;52;86m界\x1b[0mX", Options{})
 	span := int(math.Round(float64(img.Bounds().Dx()) / 10 * 2))
