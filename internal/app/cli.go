@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/remorses/tuistory/internal/agent"
 	"github.com/remorses/tuistory/internal/relay"
 	"github.com/remorses/tuistory/internal/session"
 	"github.com/spf13/cobra"
@@ -16,7 +17,8 @@ func ExecuteCommand(args []string, reg *relay.SessionRegistry, callerCwd string,
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	rootCmd := NewCommand(reg, callerCwd, callerEnv, &stdout, &stderr)
+	c := &commandContext{registry: reg, cwd: callerCwd, env: callerEnv, agent: agent.IsAgentEnv(callerEnv), stdout: &stdout, stderr: &stderr}
+	rootCmd := newCommand(c)
 	rootCmd.SetOut(&stdout)
 	rootCmd.SetErr(&stderr)
 
@@ -42,6 +44,7 @@ type commandContext struct {
 	registry       *relay.SessionRegistry
 	cwd            string
 	env            map[string]string
+	agent          bool
 	stdout, stderr *bytes.Buffer
 }
 
@@ -73,7 +76,15 @@ func (c *commandContext) writeJSON(value any, indent bool) error {
 
 // NewCommand constructs the complete Cobra command tree for tuistory.
 func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[string]string, stdout, stderr *bytes.Buffer) *cobra.Command {
-	c := &commandContext{registry: reg, cwd: callerCwd, env: callerEnv, stdout: stdout, stderr: stderr}
+	agentMode := agent.IsAgentMode()
+	if callerEnv != nil {
+		agentMode = agent.IsAgentEnv(callerEnv)
+	}
+	c := &commandContext{registry: reg, cwd: callerCwd, env: callerEnv, agent: agentMode, stdout: stdout, stderr: stderr}
+	return newCommand(c)
+}
+
+func newCommand(c *commandContext) *cobra.Command {
 	root := newLaunchCommands(c)
 	root.AddCommand(
 		newSnapshotCommand(c),
@@ -95,8 +106,8 @@ func NewCommand(reg *relay.SessionRegistry, callerCwd string, callerEnv map[stri
 		newDaemonStopCommand(c),
 		newAttachCommand(c),
 	)
-	root.SetOut(stdout)
-	root.SetErr(stderr)
-	setupHelp(root)
+	root.SetOut(c.stdout)
+	root.SetErr(c.stderr)
+	setupHelp(root, c.agent)
 	return root
 }

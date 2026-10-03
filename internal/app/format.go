@@ -57,3 +57,15 @@ func timeAgo(ts int64) string {
 func boolPtr(b bool) *bool {
 	return &b
 }
+
+func (c *commandContext) printSessionDiagnostic(name, action, command, cwd string, cols, rows int) {
+	fmt.Fprintf(c.stdout, "Session %q %s command:%q cwd:%q cols:%d rows:%d", name, action, command, cwd, cols, rows)
+}
+
+func (c *commandContext) warnSilentSession(name, action string, timeout int) {
+	if c.agent {
+		fmt.Fprintf(c.stderr, "Session %q %s, but produced no output within %dms; process running; use --no-wait for silent startup.", name, action, timeout)
+		return
+	}
+	fmt.Fprintf(c.stderr, "Session %q %s, but produced no output within %dms.\nThe process is still running in the background.\nIf the command is expected to be silent at startup, pass --no-wait to skip this check.\n", name, action, timeout)
+}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree/v2"
-	"github.com/remorses/tuistory/internal/agent"
 	"github.com/spf13/cobra"
 )
 
@@ -104,21 +103,38 @@ var techCatalog = cobrahelptree.TechCatalog{
 	},
 }
 
-func setupHelp(cmd *cobra.Command) {
-	_ = cobrahelptree.SetupWithOptions(cmd, cobrahelptree.HelpOptions{
-		Catalog: techCatalog,
+func setupHelp(cmd *cobra.Command, agentMode bool) {
+	opts := cobrahelptree.HelpOptions{
+		Catalog:      techCatalog,
+		DisableAgent: true,
 		Tree: cobrahelptree.TreeOptions{
 			HideGeneratedCommands: true,
 		},
-	})
+	}
+	if err := cobrahelptree.SetupWithOptions(cmd, opts); err != nil {
+		cmd.PrintErrln(err)
+		return
+	}
 	help := cmd.HelpFunc()
 	cmd.SetHelpFunc(func(c *cobra.Command, args []string) {
-		if agent.IsAgentMode() {
+		if agentMode {
 			if _, err := fmt.Fprintln(c.OutOrStdout(), "ALERT: Agents must read `AGENT=1 tuistory skill` before using this tool."); err != nil {
 				c.PrintErrln(err)
 				return
 			}
+			if _, err := fmt.Fprint(c.OutOrStdout(), cobrahelptree.RenderAgentHelp(c, techCatalog, opts.Agent)); err != nil {
+				c.PrintErrln(err)
+			}
+			return
 		}
 		help(c, args)
+	})
+	usage := cmd.UsageFunc()
+	cmd.SetUsageFunc(func(c *cobra.Command) error {
+		if !agentMode {
+			return usage(c)
+		}
+		_, err := fmt.Fprint(c.OutOrStderr(), cobrahelptree.RenderAgentHelp(c, techCatalog, opts.Agent))
+		return err
 	})
 }

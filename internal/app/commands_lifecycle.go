@@ -1,8 +1,8 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -87,19 +87,16 @@ func newSessionsCommand(c *commandContext) *cobra.Command {
 				return nil
 			}
 
-			// Sort by most recently started first
-			slices.SortFunc(list, func(a, b relay.SessionInfo) int {
-				if b.StartedAt > a.StartedAt {
-					return 1
-				}
-				if b.StartedAt < a.StartedAt {
-					return -1
-				}
-				return 0
-			})
-
 			if sessionsJSON {
-				return c.writeJSON(list, true)
+				return c.writeJSON(list, !c.agent)
+			}
+			if c.agent {
+				for _, item := range list {
+					if err := json.NewEncoder(c.stdout).Encode(item); err != nil {
+						return fmt.Errorf("encoding session output: %w", err)
+					}
+				}
+				return nil
 			}
 
 			lines := formatSessions(list)
@@ -146,7 +143,7 @@ func (o *restartOptions) waitForRestart(c *commandContext, s *session.Session) e
 		if s.IsDead() {
 			return waitErr
 		}
-		fmt.Fprintf(c.stderr, "Session %q restarted, but produced no output within 5000ms.\nThe process is still running in the background.\nIf the command is expected to be silent at startup, pass --no-wait to skip this check.\n", o.sessionName)
+		c.warnSilentSession(o.sessionName, "restarted", 5000)
 	}
 	return nil
 }

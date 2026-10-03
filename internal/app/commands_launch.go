@@ -132,12 +132,16 @@ func (o *launchOptions) waitForLaunch(c *commandContext, s *session.Session, nam
 		if s.IsDead() {
 			return fmt.Errorf("Failed to launch session %q: %w", name, err)
 		}
-		fmt.Fprintf(c.stderr, "Session %q started, but produced no output within %dms.\nThe process is still running in the background.\nIf the command is expected to be silent at startup, pass --no-wait to skip this check.\n", name, o.timeout)
+		c.warnSilentSession(name, "started", o.timeout)
 	}
 	return nil
 }
 
 func (o *launchOptions) printExisting(c *commandContext, s *session.Session, name string) {
+	if c.agent {
+		c.printSessionDiagnostic(name, "already running", s.Command(), s.Cwd(), s.Cols(), s.Rows())
+		return
+	}
 	if !o.background {
 		fmt.Fprintf(c.stdout, "Session %q already running\n  with command: `%s`\n  in cwd: `%s`\n  read output with: `tuistory read -s %s --all`", name, s.Command(), s.Cwd(), shellQuote(name))
 		return
@@ -149,6 +153,10 @@ func (o *launchOptions) printExisting(c *commandContext, s *session.Session, nam
 }
 
 func (o *launchOptions) printStarted(c *commandContext, opts session.LaunchOptions, name string) {
+	if c.agent {
+		c.printSessionDiagnostic(name, "started", opts.Label, opts.Cwd, opts.Cols, opts.Rows)
+		return
+	}
 	if !o.background {
 		fmt.Fprintf(c.stdout, "Session %q started", name)
 		return
