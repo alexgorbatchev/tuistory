@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/binary"
 	"fmt"
+	"net/netip"
 	"runtime"
 	"syscall"
 	"unsafe"
@@ -100,9 +101,9 @@ func processFDs(pid int) ([]procFDInfo, error) {
 	}
 }
 
-func findPIDsListeningOnPort(port int) ([]int, error) {
-	if port <= 0 || port > 65535 {
-		return nil, fmt.Errorf("invalid port %d", port)
+func findPIDsListeningOnEndpoint(endpoint netip.AddrPort) ([]int, error) {
+	if !endpoint.IsValid() || endpoint.Port() == 0 || endpoint.Addr().Zone() != "" {
+		return nil, fmt.Errorf("invalid endpoint %s", endpoint)
 	}
 	pids, err := process.PIDs()
 	if err != nil {
@@ -126,7 +127,17 @@ func findPIDsListeningOnPort(port int) ([]int, error) {
 			}
 			var raw [2]byte
 			binary.NativeEndian.PutUint16(raw[:], uint16(info.TCP.Inet.LocalPort))
-			if int(binary.BigEndian.Uint16(raw[:])) == port {
+			var address netip.Addr
+			switch info.Family {
+			case unix.AF_INET:
+				// in4in6_addr stores IPv4 after three padding uint32 words.
+				address = netip.AddrFrom4([4]byte(info.TCP.Inet.LocalAddr[12:]))
+			case unix.AF_INET6:
+				address = netip.AddrFrom16(info.TCP.Inet.LocalAddr)
+			default:
+				continue
+			}
+			if netip.AddrPortFrom(address, binary.BigEndian.Uint16(raw[:])) == endpoint {
 				owners = append(owners, pid)
 				break
 			}

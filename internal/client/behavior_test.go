@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -55,12 +56,21 @@ func serveClientTestRelay() int {
 	if version == "" {
 		version = helperVersion
 	}
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	host := os.Getenv("TUISTORY_CLIENT_TEST_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return 1
 	}
 	handler := relay.NewServer(version, port, "").Handler()
 	mode := os.Getenv("TUISTORY_CLIENT_TEST_MODE")
+	if host != "127.0.0.1" || mode == "foreign" {
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintln(w, "unrelated listener")
+		})
+	}
 	if mode == "unresponsive" {
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -120,9 +130,17 @@ type clientRelayChild struct {
 }
 
 func startOwnedClientRelay(t *testing.T, port int, version, mode string) *clientRelayChild {
+	return startOwnedClientListener(t, port, "127.0.0.1", version, mode)
+}
+
+func startOwnedClientListener(t *testing.T, port int, host, version, mode string) *clientRelayChild {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "relay-server")
-	cmd.Env = append(os.Environ(), "TUISTORY_CLIENT_TEST_HELPER=1", "TUISTORY_RELAY=1", fmt.Sprintf("TUISTORY_PORT=%d", port), "TUISTORY_CLIENT_TEST_VERSION="+version, "TUISTORY_CLIENT_TEST_MODE="+mode)
+	command := "relay-server"
+	if host != "127.0.0.1" || mode == "foreign" {
+		command = "listener-fixture"
+	}
+	cmd := exec.Command(os.Args[0], command)
+	cmd.Env = append(os.Environ(), "TUISTORY_CLIENT_TEST_HELPER=1", "TUISTORY_RELAY=1", fmt.Sprintf("TUISTORY_PORT=%d", port), "TUISTORY_CLIENT_TEST_VERSION="+version, "TUISTORY_CLIENT_TEST_MODE="+mode, "TUISTORY_CLIENT_TEST_HOST="+host)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +184,7 @@ func startClientRelayChild(t *testing.T, port int, version, mode string) *client
 // the native child socket owners created by the current test.
 func cleanupSpawnedClientRelay(t *testing.T, port int) {
 	t.Helper()
-	pids, err := findPIDsListeningOnPort(port)
+	pids, err := findPIDsListeningOnEndpoint(netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(port)))
 	if err != nil {
 		t.Error(err)
 		return

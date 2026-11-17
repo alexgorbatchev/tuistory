@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,7 +137,11 @@ func KillRelay(port int) (bool, error) {
 
 // killProcessOnPort searches /proc on Linux for the socket inode and kills the owning PID.
 func killProcessOnPort(port int) error {
-	pids, err := findPIDsListeningOnPort(port)
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid port %d", port)
+	}
+	endpoint := netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(port))
+	pids, err := findPIDsListeningOnEndpoint(endpoint)
 	if err != nil {
 		return fmt.Errorf("finding owners of port %d: %w", port, err)
 	}
@@ -151,7 +156,7 @@ func killProcessOnPort(port int) error {
 	}
 	// Re-enumerate: a terminated owner may have released its port and PID.
 	if isPortOccupied(port) {
-		remaining, err := findPIDsListeningOnPort(port)
+		remaining, err := findPIDsListeningOnEndpoint(endpoint)
 		if err != nil {
 			return err
 		}

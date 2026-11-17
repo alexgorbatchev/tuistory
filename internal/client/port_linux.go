@@ -1,8 +1,9 @@
 package client
 
 import (
-	"errors"
+	"encoding/binary"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,32 +11,34 @@ import (
 	"strings"
 )
 
-func findPIDsListeningOnPort(port int) ([]int, error) {
-	if port <= 0 || port > 65535 {
-		return nil, fmt.Errorf("invalid port %d", port)
+func findPIDsListeningOnEndpoint(endpoint netip.AddrPort) ([]int, error) {
+	if !endpoint.IsValid() || endpoint.Port() == 0 || endpoint.Addr().Zone() != "" {
+		return nil, fmt.Errorf("invalid endpoint %s", endpoint)
 	}
+	name := "tcp6"
+	if endpoint.Addr().Is4() {
+		name = "tcp"
+	}
+	// proc prints network-order addresses as native uint32 words on both
+	// IPv4 and IPv6; keep that family and every address word in the match.
+	var address strings.Builder
+	bytes := endpoint.Addr().AsSlice()
+	for i := 0; i < len(bytes); i += 4 {
+		fmt.Fprintf(&address, "%08X", binary.NativeEndian.Uint32(bytes[i:i+4]))
+	}
+	want := fmt.Sprintf("%s:%04X", address.String(), endpoint.Port())
 	inodes := make(map[string]bool)
-	for _, name := range []string{"tcp", "tcp6"} {
-		data, err := os.ReadFile("/proc/net/" + name)
-		if errors.Is(err, os.ErrNotExist) && name == "tcp6" {
+	data, err := os.ReadFile("/proc/net/" + name)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 10 || fields[3] != "0A" {
 			continue
 		}
-		if err != nil {
-			return nil, err
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) < 10 || fields[3] != "0A" {
-				continue
-			}
-			_, rawPort, ok := strings.Cut(fields[1], ":")
-			if !ok {
-				continue
-			}
-			value, err := strconv.ParseUint(rawPort, 16, 16)
-			if err == nil && int(value) == port {
-				inodes["socket:["+fields[9]+"]"] = true
-			}
+		if fields[1] == want {
+			inodes["socket:["+fields[9]+"]"] = true
 		}
 	}
 	if len(inodes) == 0 {

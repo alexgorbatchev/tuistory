@@ -25,7 +25,7 @@ func TestFindListenerOwners(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer listener.Close()
-			pids, err := findPIDsListeningOnPort(listener.Addr().(*net.TCPAddr).Port)
+			pids, err := findPIDsListeningOnEndpoint(listener.Addr().(*net.TCPAddr).AddrPort())
 			if err != nil {
 				t.Fatal(err)
 			}
